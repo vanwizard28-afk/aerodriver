@@ -1,86 +1,142 @@
 "use client"
 
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Plane, Car, Clock, Navigation, CheckCircle2, ChevronRight, ChevronDown, User, Phone, Radio, Radar, Gauge, PlaneLanding, Luggage, MoveVertical, Plus, X, Presentation, Diamond } from 'lucide-react'
 
 const DRIVER_STAGES = ["En Route to Terminal", "At Pickup Point", "Passenger Onboard", "Completed"]
 const NEXT_STAGE_LABELS = ["Mark as Arrived", "Passenger Onboard", "Complete Trip"]
 
-const INITIAL_JOBS = [
-  {
-    id: "JOB-8821",
-    passenger: "Sarah Jenkins",
-    phone: "+44 7700 900077",
-    flightNo: "BA0183",
-    airline: "British Airways",
-    airport: "LHR (London Heathrow)",
-    terminal: "Terminal 5 - Gate A12",
-    origin: "JFK (New York)",
-    scheduledTime: "14:30 Today",
-    estimatedArrival: "14:10 (20 mins early)",
-    altitude: "Ground (Taxiing to gate)",
-    airspeed: "18 kts",
-    progress: 100,
-    baggageBelt: "Belt 4",
-    flightStatus: "Landed 14:10",
-    statusColor: "bg-emerald-500/20 text-emerald-400 border-emerald-500/40",
-    pickupPoint: "Terminal 5 Arrivals (Outside Costa Coffee)",
-    destination: "124 Park Lane, London, W1K 7AA",
-    fare: "£110.00"
-  },
-  {
-    id: "JOB-8825",
-    passenger: "Marcus Vance",
-    phone: "+44 7700 900123",
-    flightNo: "EK0009",
-    airline: "Emirates",
-    airport: "LGW (London Gatwick)",
-    terminal: "North Terminal",
-    origin: "DXB (Dubai)",
-    scheduledTime: "16:45 Today",
-    estimatedArrival: "16:40 (On Time)",
-    altitude: "32,000 ft (En Route)",
-    airspeed: "490 kts",
-    progress: 64,
-    baggageBelt: "TBC",
-    flightStatus: "In Air - On Time",
-    statusColor: "bg-blue-500/20 text-blue-400 border-blue-500/40",
-    pickupPoint: "North Terminal Chauffeur Express Line",
-    destination: "The Ritz Hotel, Piccadilly, London",
-    fare: "£145.00"
-  }
+type Job = {
+  id: string
+  passenger: string
+  phone: string
+  flightNo: string
+  airline: string
+  airport: string
+  terminal: string
+  origin: string
+  pickupAt: string
+  estimatedArrival: string
+  altitude: string
+  airspeed: string
+  progress: number
+  baggageBelt: string
+  flightStatus: string
+  statusColor: string
+  pickupPoint: string
+  destination: string
+  fareAmount: number
+  stage: number
+}
+
+type JobFormField = {
+  name: 'passenger' | 'phone' | 'flightNo' | 'airport' | 'pickupTime' | 'fare'
+  label: string
+  type: string
+  placeholder?: string
+  step?: string
+  min?: string
+}
+
+const NEW_JOB_FIELDS: JobFormField[] = [
+  { name: 'passenger', label: 'Passenger Name', type: 'text', placeholder: 'e.g. Jane Doe' },
+  { name: 'phone', label: 'Phone Number', type: 'tel', placeholder: '+44 7700 900000' },
+  { name: 'flightNo', label: 'Flight Number', type: 'text', placeholder: 'e.g. BA0249' },
+  { name: 'airport', label: 'Airport / Terminal', type: 'text', placeholder: 'e.g. LHR (London Heathrow) T3' },
+  { name: 'pickupTime', label: 'Pickup Time', type: 'time' },
+  { name: 'fare', label: 'Fare (£)', type: 'number', placeholder: '0.00', step: '0.01', min: '0' },
 ]
 
-const NEW_JOB_FIELDS = [
-  { name: 'passenger', label: 'Passenger Name', placeholder: 'e.g. Jane Doe' },
-  { name: 'phone', label: 'Phone Number', placeholder: '+44 7700 900000' },
-  { name: 'flightNo', label: 'Flight Number', placeholder: 'e.g. BA0249' },
-  { name: 'airport', label: 'Airport / Terminal', placeholder: 'e.g. LHR (London Heathrow) T3' },
-  { name: 'pickupTime', label: 'Pickup Time', placeholder: 'e.g. 18:30 Today' },
-  { name: 'fare', label: 'Fare', placeholder: '£0.00' },
-]
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+const formatHHMM = (value: string | Date) => {
+  const d = typeof value === 'string' ? new Date(value) : value
+  return isNaN(d.getTime()) ? '--:--' : `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+
+const normalizeJob = (j: Record<string, unknown>, legacyStages: Record<string, number>): Job => {
+  const str = (v: unknown, fallback: string) => (typeof v === 'string' ? v : fallback)
+  const m = str(j.scheduledTime, '').match(/\b(\d{1,2}):(\d{2})\b/)
+  const fallbackPickup = new Date()
+  if (m) fallbackPickup.setHours(+m[1], +m[2], 0, 0)
+  return {
+    id: str(j.id, `JOB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`),
+    passenger: str(j.passenger, ''),
+    phone: str(j.phone, ''),
+    flightNo: str(j.flightNo, ''),
+    airline: str(j.airline, '—'),
+    airport: str(j.airport, ''),
+    terminal: str(j.terminal, '—'),
+    origin: str(j.origin, '—'),
+    pickupAt: str(j.pickupAt, fallbackPickup.toISOString()),
+    estimatedArrival: str(j.estimatedArrival, 'TBC'),
+    altitude: str(j.altitude, '—'),
+    airspeed: str(j.airspeed, '—'),
+    progress: typeof j.progress === 'number' ? j.progress : 0,
+    baggageBelt: str(j.baggageBelt, 'TBC'),
+    flightStatus: str(j.flightStatus, 'Scheduled'),
+    statusColor: str(j.statusColor, 'bg-amber-500/20 text-amber-400 border-amber-500/40'),
+    pickupPoint: str(j.pickupPoint, ''),
+    destination: str(j.destination, 'TBC'),
+    fareAmount:
+      typeof j.fareAmount === 'number'
+        ? j.fareAmount
+        : parseFloat(String(j.fare ?? '').replace(/[^0-9.]/g, '')) || 0,
+    stage: typeof j.stage === 'number' ? j.stage : (legacyStages[String(j.id)] ?? 0),
+  }
+}
 
 export default function AeroDriverDashboard() {
   const [activeTab, setActiveTab] = useState<'upcoming' | 'completed'>('upcoming')
-  const [expandedFlight, setExpandedFlight] = useState<string | null>("JOB-8821") // Default first card open
-  const [driverStages, setDriverStages] = useState<Record<string, number>>({})
-  const [jobs, setJobs] = useState(INITIAL_JOBS)
+  const [expandedFlight, setExpandedFlight] = useState<string | null>(null)
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
+  const [jobs, setJobs] = useState<Job[]>([])
+  const [storageLoaded, setStorageLoaded] = useState(false)
   const [showAddJob, setShowAddJob] = useState(false)
-  const [greetingJob, setGreetingJob] = useState<(typeof INITIAL_JOBS)[number] | null>(null)
+  const [greetingJob, setGreetingJob] = useState<Job | null>(null)
   const [form, setForm] = useState({ passenger: '', phone: '', flightNo: '', airport: '', pickupTime: '', fare: '' })
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      try {
+        const storedJobs = localStorage.getItem('aerodriver-jobs')
+        const storedStages = localStorage.getItem('aerodriver-stages')
+        const legacyStages: Record<string, number> = storedStages ? JSON.parse(storedStages) : {}
+        if (storedJobs) {
+          setJobs((JSON.parse(storedJobs) as Record<string, unknown>[]).map((j) => normalizeJob(j, legacyStages)))
+        }
+        localStorage.removeItem('aerodriver-stages')
+      } catch {}
+      setStorageLoaded(true)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!storageLoaded) return
+    localStorage.setItem('aerodriver-jobs', JSON.stringify(jobs))
+  }, [jobs, storageLoaded])
 
   const toggleFlightDetails = (id: string) => {
     setExpandedFlight(expandedFlight === id ? null : id)
   }
 
-  const jobStage = (id: string) => driverStages[id] ?? 0
-  const isJobCompleted = (id: string) => jobStage(id) === DRIVER_STAGES.length - 1
+  const isCompleted = (j: Job) => j.stage === DRIVER_STAGES.length - 1
 
   const advanceJobStage = (id: string) => {
-    setDriverStages(prev => ({
-      ...prev,
-      [id]: Math.min((prev[id] ?? 0) + 1, DRIVER_STAGES.length - 1)
-    }))
+    setJobs(prev => prev.map(j => j.id === id
+      ? { ...j, stage: Math.min(j.stage + 1, DRIVER_STAGES.length - 1) }
+      : j))
+  }
+
+  const handleDelete = (id: string) => {
+    if (confirmingDelete === id) {
+      setJobs(prev => prev.filter(j => j.id !== id))
+      if (expandedFlight === id) setExpandedFlight(null)
+      setConfirmingDelete(null)
+    } else {
+      setConfirmingDelete(id)
+      setTimeout(() => setConfirmingDelete(prev => (prev === id ? null : prev)), 3000)
+    }
   }
 
   const openDirections = (pickup: string) => {
@@ -89,8 +145,13 @@ export default function AeroDriverDashboard() {
 
   const handleAddJob = (e: React.FormEvent) => {
     e.preventDefault()
-    const newJob = {
-      id: `JOB-${Math.floor(1000 + Math.random() * 9000)}`,
+    const [hours, minutes] = form.pickupTime.split(':').map(Number)
+    const pickupDate = new Date()
+    pickupDate.setHours(hours || 0, minutes || 0, 0, 0)
+    if (pickupDate.getTime() < Date.now()) pickupDate.setDate(pickupDate.getDate() + 1)
+
+    const newJob: Job = {
+      id: `JOB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
       passenger: form.passenger,
       phone: form.phone,
       flightNo: form.flightNo.toUpperCase(),
@@ -98,7 +159,7 @@ export default function AeroDriverDashboard() {
       airport: form.airport,
       terminal: form.airport,
       origin: '—',
-      scheduledTime: form.pickupTime,
+      pickupAt: pickupDate.toISOString(),
       estimatedArrival: 'TBC',
       altitude: 'Awaiting telemetry',
       airspeed: '—',
@@ -108,7 +169,8 @@ export default function AeroDriverDashboard() {
       statusColor: 'bg-amber-500/20 text-amber-400 border-amber-500/40',
       pickupPoint: form.airport,
       destination: 'TBC',
-      fare: form.fare.startsWith('£') ? form.fare : `£${form.fare}`
+      fareAmount: parseFloat(form.fare) || 0,
+      stage: 0,
     }
     setJobs(prev => [...prev, newJob])
     setActiveTab('upcoming')
@@ -116,30 +178,20 @@ export default function AeroDriverDashboard() {
     setForm({ passenger: '', phone: '', flightNo: '', airport: '', pickupTime: '', fare: '' })
   }
 
-  const visibleJobs = jobs.filter(j => activeTab === 'upcoming' ? !isJobCompleted(j.id) : isJobCompleted(j.id))
-  const activeCount = jobs.filter(j => !isJobCompleted(j.id)).length
+  const visibleJobs = jobs.filter(j => activeTab === 'upcoming' ? !isCompleted(j) : isCompleted(j))
+  const activeCount = jobs.filter(j => !isCompleted(j)).length
   const completedCount = jobs.length - activeCount
 
-  const pickupMinutes = jobs
-    .filter((j) => !isJobCompleted(j.id))
-    .map((j) => {
-      const m = j.scheduledTime.match(/\b(\d{1,2}):(\d{2})\b/)
-      return m ? +m[1] * 60 + +m[2] : Infinity
-    })
-  const earliestPickup = Math.min(...pickupMinutes)
-  const nextPickup =
-    earliestPickup === Infinity
-      ? '--:--'
-      : `${String(Math.floor(earliestPickup / 60)).padStart(2, '0')}:${String(earliestPickup % 60).padStart(2, '0')}`
+  const pickupTimes = jobs
+    .filter((j) => !isCompleted(j))
+    .map((j) => new Date(j.pickupAt).getTime())
+    .filter((t) => !isNaN(t))
+  const nextPickup = pickupTimes.length ? formatHHMM(new Date(Math.min(...pickupTimes))) : '--:--'
 
-  const fareSum = (list: typeof INITIAL_JOBS) =>
-    list.reduce((sum, j) => {
-      const fare = parseFloat(j.fare.replace(/[^0-9.]/g, ''))
-      return sum + (isNaN(fare) ? 0 : fare)
-    }, 0)
+  const fareSum = (list: Job[]) => list.reduce((sum, j) => sum + j.fareAmount, 0)
   const formatFare = (n: number) => `£${n % 1 === 0 ? n : n.toFixed(2)}`
 
-  const dayEarningsLabel = formatFare(fareSum(jobs.filter((j) => isJobCompleted(j.id))))
+  const dayEarningsLabel = formatFare(fareSum(jobs.filter(isCompleted)))
   const totalBookedLabel = formatFare(fareSum(jobs))
 
   return (
@@ -228,8 +280,8 @@ export default function AeroDriverDashboard() {
 
           {visibleJobs.map((job) => {
             const isExpanded = expandedFlight === job.id
-            const stage = jobStage(job.id)
-            const completed = isJobCompleted(job.id)
+            const stage = job.stage
+            const completed = isCompleted(job)
 
             const originCode = job.origin.split(' ')[0]
             const originCity = job.origin.match(/\((.*?)\)/)?.[1] ?? ''
@@ -272,6 +324,18 @@ export default function AeroDriverDashboard() {
                     <div className={`px-3 py-1.5 rounded-full text-xs font-bold border ${job.statusColor}`}>
                       {job.flightStatus}
                     </div>
+                    <button
+                      onClick={() => handleDelete(job.id)}
+                      aria-label={confirmingDelete === job.id ? `Confirm delete job ${job.id}` : `Delete job ${job.id}`}
+                      title="Delete job"
+                      className={`rounded-lg border transition-all ${
+                        confirmingDelete === job.id
+                          ? 'text-red-300 bg-red-500/15 border-red-500/50 font-bold text-xs px-2.5 py-1.5'
+                          : 'text-slate-500 hover:text-red-400 hover:bg-red-500/10 border-transparent hover:border-red-500/30 p-1.5'
+                      }`}
+                    >
+                      {confirmingDelete === job.id ? 'Confirm' : <X className="w-4 h-4" />}
+                    </button>
                   </div>
                 </div>
 
@@ -288,7 +352,7 @@ export default function AeroDriverDashboard() {
                     </div>
                     <div className="flex items-center gap-2.5 text-slate-300">
                       <Clock className="w-4 h-4 text-slate-400" />
-                      <span>Pickup Time: <strong className="text-amber-400">{job.scheduledTime}</strong></span>
+                      <span>Pickup Time: <strong className="text-amber-400">{formatHHMM(job.pickupAt)}</strong></span>
                     </div>
                   </div>
 
@@ -464,7 +528,7 @@ export default function AeroDriverDashboard() {
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
                   <div>
                     <span className="text-xs text-slate-500 block">Fare Value</span>
-                    <span className="text-xl font-black text-white">{job.fare}</span>
+                    <span className="text-xl font-black text-white">{formatFare(job.fareAmount)}</span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <button 
@@ -535,13 +599,15 @@ export default function AeroDriverDashboard() {
                     {field.label}
                   </label>
                   <input
-                    type="text"
+                    type={field.type}
+                    step={field.step}
+                    min={field.min}
                     name={field.name}
                     required
-                    value={form[field.name as keyof typeof form]}
+                    value={form[field.name]}
                     onChange={(e) => setForm({ ...form, [field.name]: e.target.value })}
                     placeholder={field.placeholder}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 outline-none focus:border-amber-400 transition-colors"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 outline-none focus:border-amber-400 transition-colors [color-scheme:dark]"
                   />
                 </div>
               ))}
