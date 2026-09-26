@@ -47,6 +47,9 @@ const NEW_JOB_FIELDS: JobFormField[] = [
   { name: 'fare', label: 'Fare (£)', type: 'number', placeholder: '0.00', step: '0.01', min: '0' },
 ]
 
+const PICKUP_HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'))
+const PICKUP_MINUTES = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0'))
+
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
 const formatHHMM = (value: string | Date) => {
@@ -94,7 +97,7 @@ export default function AeroDriverDashboard() {
   const [storageLoaded, setStorageLoaded] = useState(false)
   const [showAddJob, setShowAddJob] = useState(false)
   const [greetingJob, setGreetingJob] = useState<Job | null>(null)
-  const [form, setForm] = useState({ passenger: '', phone: '', flightNo: '', airport: '', pickupTime: '', fare: '' })
+  const [form, setForm] = useState({ passenger: '', phone: '', flightNo: '', airport: '', pickupHour: '', pickupMinute: '', fare: '' })
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -145,9 +148,8 @@ export default function AeroDriverDashboard() {
 
   const handleAddJob = (e: React.FormEvent) => {
     e.preventDefault()
-    const [hours, minutes] = form.pickupTime.split(':').map(Number)
     const pickupDate = new Date()
-    pickupDate.setHours(hours || 0, minutes || 0, 0, 0)
+    pickupDate.setHours(Number(form.pickupHour), Number(form.pickupMinute), 0, 0)
     if (pickupDate.getTime() < Date.now()) pickupDate.setDate(pickupDate.getDate() + 1)
 
     const newJob: Job = {
@@ -175,7 +177,7 @@ export default function AeroDriverDashboard() {
     setJobs(prev => [...prev, newJob])
     setActiveTab('upcoming')
     setShowAddJob(false)
-    setForm({ passenger: '', phone: '', flightNo: '', airport: '', pickupTime: '', fare: '' })
+    setForm({ passenger: '', phone: '', flightNo: '', airport: '', pickupHour: '', pickupMinute: '', fare: '' })
   }
 
   const visibleJobs = jobs.filter(j => activeTab === 'upcoming' ? !isCompleted(j) : isCompleted(j))
@@ -598,17 +600,46 @@ export default function AeroDriverDashboard() {
                   <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">
                     {field.label}
                   </label>
-                  <input
-                    type={field.type}
-                    step={field.step}
-                    min={field.min}
-                    name={field.name}
-                    required
-                    value={form[field.name]}
-                    onChange={(e) => setForm({ ...form, [field.name]: e.target.value })}
-                    placeholder={field.placeholder}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 outline-none focus:border-amber-400 transition-colors [color-scheme:dark]"
-                  />
+                  {field.type === 'time' ? (
+                    <div className="flex gap-2">
+                      <select
+                        required
+                        aria-label="Pickup hour"
+                        value={form.pickupHour}
+                        onChange={(e) => setForm({ ...form, pickupHour: e.target.value })}
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400 transition-colors [color-scheme:dark]"
+                      >
+                        <option value="" disabled>HH</option>
+                        {PICKUP_HOURS.map((h) => (
+                          <option key={h} value={h}>{h}</option>
+                        ))}
+                      </select>
+                      <select
+                        required
+                        aria-label="Pickup minute"
+                        value={form.pickupMinute}
+                        onChange={(e) => setForm({ ...form, pickupMinute: e.target.value })}
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400 transition-colors [color-scheme:dark]"
+                      >
+                        <option value="" disabled>MM</option>
+                        {PICKUP_MINUTES.map((m) => (
+                          <option key={m} value={m}>{m}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <input
+                      type={field.type}
+                      step={field.step}
+                      min={field.min}
+                      name={field.name}
+                      required
+                      value={form[field.name as keyof typeof form]}
+                      onChange={(e) => setForm({ ...form, [field.name]: e.target.value })}
+                      placeholder={field.placeholder}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 outline-none focus:border-amber-400 transition-colors [color-scheme:dark]"
+                    />
+                  )}
                 </div>
               ))}
 
