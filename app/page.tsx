@@ -50,6 +50,32 @@ const NEW_JOB_FIELDS: JobFormField[] = [
 const PICKUP_HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'))
 const PICKUP_MINUTES = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0'))
 
+type FlightTelemetry = {
+  airline: string
+  status: string
+  statusLabel: string
+  origin: string
+  destination: string
+  terminal: string
+  baggageBelt: string
+  estimatedArrivalUtc: string | null
+  actualArrivalUtc: string | null
+  altitudeFt: number | null
+  groundSpeedKt: number | null
+  progress: number
+}
+
+const flightCode = (s: string) => s.toUpperCase().replace(/\s+/g, '')
+
+const liveStatusColor = (status: string) =>
+  status === 'Arrived'
+    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+    : status === 'Delayed' || status === 'Canceled' || status === 'Diverted'
+      ? 'bg-red-500/20 text-red-400 border-red-500/40'
+      : status === 'EnRoute' || status === 'Departed' || status === 'Approaching'
+        ? 'bg-blue-500/20 text-blue-400 border-blue-500/40'
+        : 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
 const formatHHMM = (value: string | Date) => {
@@ -97,6 +123,7 @@ export default function AeroDriverDashboard() {
   const [storageLoaded, setStorageLoaded] = useState(false)
   const [showAddJob, setShowAddJob] = useState(false)
   const [greetingJob, setGreetingJob] = useState<Job | null>(null)
+  const [telemetry, setTelemetry] = useState<Record<string, FlightTelemetry>>({})
   const [form, setForm] = useState({ passenger: '', phone: '', flightNo: '', airport: '', pickupHour: '', pickupMinute: '', fare: '' })
 
   useEffect(() => {
@@ -118,6 +145,33 @@ export default function AeroDriverDashboard() {
     if (!storageLoaded) return
     localStorage.setItem('aerodriver-jobs', JSON.stringify(jobs))
   }, [jobs, storageLoaded])
+
+  const flightKey = jobs.map((j) => flightCode(j.flightNo)).filter(Boolean).join(',')
+
+  useEffect(() => {
+    const flightNos = [...new Set(flightKey ? flightKey.split(',') : [])]
+    if (!flightNos.length) return
+    let cancelled = false
+    const load = async () => {
+      const results = await Promise.allSettled(
+        flightNos.map((fn) => fetch(`/api/flight/${fn}`).then((r) => r.json()))
+      )
+      if (cancelled) return
+      setTelemetry((prev) => {
+        const next = { ...prev }
+        results.forEach((r, i) => {
+          if (r.status === 'fulfilled' && r.value?.found) next[flightNos[i]] = r.value.flight
+        })
+        return next
+      })
+    }
+    load()
+    const interval = setInterval(load, 5 * 60 * 1000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [flightKey])
 
   const toggleFlightDetails = (id: string) => {
     setExpandedFlight(expandedFlight === id ? null : id)
@@ -284,13 +338,25 @@ export default function AeroDriverDashboard() {
             const isExpanded = expandedFlight === job.id
             const stage = job.stage
             const completed = isCompleted(job)
+            const live = telemetry[flightCode(job.flightNo)]
 
-            const originCode = job.origin.split(' ')[0]
-            const originCity = job.origin.match(/\((.*?)\)/)?.[1] ?? ''
-            const destCode = job.airport.split(' ')[0]
-            const destCity = job.airport.match(/\((.*?)\)/)?.[1] ?? ''
+            const originStr = live?.origin ?? job.origin
+            const destStr = live?.destination ?? job.airport
+            const originCode = originStr.split(' ')[0]
+            const originCity = originStr.match(/\((.*?)\)/)?.[1] ?? ''
+            const destCode = destStr.split(' ')[0]
+            const destCity = destStr.match(/\((.*?)\)/)?.[1] ?? ''
+            const progress = live?.progress ?? job.progress
+            const flightStatusLabel = live?.statusLabel ?? job.flightStatus
+            const flightStatusColor = live ? liveStatusColor(live.status) : job.statusColor
+            const altitude = live?.altitudeFt != null ? `${Math.round(live.altitudeFt).toLocaleString()} ft` : job.altitude
+            const airspeed = live?.groundSpeedKt != null ? `${Math.round(live.groundSpeedKt)} kts` : job.airspeed
+            const estArrival = live?.estimatedArrivalUtc ? formatHHMM(live.estimatedArrivalUtc) : job.estimatedArrival
+            const terminal = live && live.terminal !== 'TBC' ? `Terminal ${live.terminal}` : job.terminal
+            const belt = live?.baggageBelt ?? job.baggageBelt
+            const airlineLine = live ? `${live.airline} — ${live.destination}` : `${job.airline} — ${job.airport}`
 
-            const t = job.progress / 100
+            const t = progress / 100
             const p0 = { x: 24, y: 116 }
             const p1 = { x: 200, y: 4 }
             const p2 = { x: 376, y: 116 }
@@ -315,7 +381,7 @@ export default function AeroDriverDashboard() {
                         <span className="font-extrabold text-white text-xl">{job.flightNo}</span>
                         <span className="text-xs text-slate-500 font-mono">• {job.id}</span>
                       </div>
-                      <p className="text-xs font-medium text-slate-400">{job.airline} — {job.airport}</p>
+                      <p className="text-xs font-medium text-slate-400">{airlineLine}</p>
                     </div>
                   </div>
 
@@ -323,8 +389,8 @@ export default function AeroDriverDashboard() {
                     <span className={`px-3 py-1.5 rounded-full text-xs font-bold border ${completed ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' : 'bg-amber-400/10 text-amber-300 border-amber-400/30'}`}>
                       {DRIVER_STAGES[stage]}
                     </span>
-                    <div className={`px-3 py-1.5 rounded-full text-xs font-bold border ${job.statusColor}`}>
-                      {job.flightStatus}
+                    <div className={`px-3 py-1.5 rounded-full text-xs font-bold border ${flightStatusColor}`}>
+                      {flightStatusLabel}
                     </div>
                     <button
                       onClick={() => handleDelete(job.id)}
@@ -398,7 +464,7 @@ export default function AeroDriverDashboard() {
                           `,
                           backgroundSize: '36px 36px, 18px 18px, 18px 18px, 100% 100%'
                         }}
-                        title={`${job.flightNo} — ${job.progress}% of route complete`}
+                        title={`${job.flightNo} — ${progress}% of route complete`}
                       >
                         {/* Radar sweep */}
                         <div 
@@ -416,7 +482,7 @@ export default function AeroDriverDashboard() {
                             Live Trajectory — {job.flightNo}
                           </span>
                           <span className="text-[10px] font-mono font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-full px-2 py-0.5">
-                            {job.progress}% COMPLETE
+                            {progress}% COMPLETE
                           </span>
                         </div>
 
@@ -442,12 +508,12 @@ export default function AeroDriverDashboard() {
                               strokeWidth="2.5" 
                               pathLength={100}
                               strokeDasharray={100}
-                              strokeDashoffset={100 - job.progress}
+                              strokeDashoffset={100 - progress}
                               vectorEffect="non-scaling-stroke"
                               style={{ filter: 'drop-shadow(0 0 6px rgba(52, 211, 153, 0.9))' }}
                             />
                             <circle cx="24" cy="116" r="4" fill="#020617" stroke="#34d399" strokeWidth="1.5" />
-                            <circle cx="376" cy="116" r="4" fill="#020617" stroke={job.progress >= 100 ? '#34d399' : '#64748b'} strokeWidth="1.5" />
+                            <circle cx="376" cy="116" r="4" fill="#020617" stroke={progress >= 100 ? '#34d399' : '#64748b'} strokeWidth="1.5" />
                           </svg>
 
                           {/* Origin label */}
@@ -488,25 +554,25 @@ export default function AeroDriverDashboard() {
                             <span className="text-slate-500 font-semibold uppercase tracking-wider text-[10px] flex items-center gap-1.5">
                               <MoveVertical className="w-3 h-3 text-emerald-500" /> Altitude
                             </span>
-                            <span className="text-emerald-300 font-mono font-bold block mt-0.5">{job.altitude}</span>
+                            <span className="text-emerald-300 font-mono font-bold block mt-0.5">{altitude}</span>
                           </div>
                           <div className="bg-slate-950/95 px-3 py-2.5">
                             <span className="text-slate-500 font-semibold uppercase tracking-wider text-[10px] flex items-center gap-1.5">
                               <Gauge className="w-3 h-3 text-emerald-500" /> Airspeed
                             </span>
-                            <span className="text-emerald-300 font-mono font-bold block mt-0.5">{job.airspeed}</span>
+                            <span className="text-emerald-300 font-mono font-bold block mt-0.5">{airspeed}</span>
                           </div>
                           <div className="bg-slate-950/95 px-3 py-2.5">
                             <span className="text-slate-500 font-semibold uppercase tracking-wider text-[10px] flex items-center gap-1.5">
                               <PlaneLanding className="w-3 h-3 text-emerald-500" /> Est. Touchdown
                             </span>
-                            <span className="text-emerald-300 font-mono font-bold block mt-0.5">{job.estimatedArrival}</span>
+                            <span className="text-emerald-300 font-mono font-bold block mt-0.5">{estArrival}</span>
                           </div>
                           <div className="bg-slate-950/95 px-3 py-2.5">
                             <span className="text-slate-500 font-semibold uppercase tracking-wider text-[10px] flex items-center gap-1.5">
                               <Luggage className="w-3 h-3 text-emerald-500" /> Baggage Belt
                             </span>
-                            <span className="text-amber-400 font-mono font-bold block mt-0.5">{job.baggageBelt}</span>
+                            <span className="text-amber-400 font-mono font-bold block mt-0.5">{belt}</span>
                           </div>
                         </div>
                       </div>
@@ -515,7 +581,7 @@ export default function AeroDriverDashboard() {
                       <div className="grid grid-cols-2 gap-3 bg-slate-950/80 p-3.5 rounded-xl text-xs">
                         <div>
                           <span className="text-slate-500 block font-medium">Terminal & Gate:</span>
-                          <span className="text-slate-200 font-semibold">{job.terminal}</span>
+                          <span className="text-slate-200 font-semibold">{terminal}</span>
                         </div>
                         <div>
                           <span className="text-slate-500 block font-medium">Live Telemetry:</span>
