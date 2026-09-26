@@ -120,6 +120,28 @@ export default function AeroDriverDashboard() {
   const activeCount = jobs.filter(j => !isJobCompleted(j.id)).length
   const completedCount = jobs.length - activeCount
 
+  const pickupMinutes = jobs
+    .filter((j) => !isJobCompleted(j.id))
+    .map((j) => {
+      const m = j.scheduledTime.match(/\b(\d{1,2}):(\d{2})\b/)
+      return m ? +m[1] * 60 + +m[2] : Infinity
+    })
+  const earliestPickup = Math.min(...pickupMinutes)
+  const nextPickup =
+    earliestPickup === Infinity
+      ? '--:--'
+      : `${String(Math.floor(earliestPickup / 60)).padStart(2, '0')}:${String(earliestPickup % 60).padStart(2, '0')}`
+
+  const fareSum = (list: typeof INITIAL_JOBS) =>
+    list.reduce((sum, j) => {
+      const fare = parseFloat(j.fare.replace(/[^0-9.]/g, ''))
+      return sum + (isNaN(fare) ? 0 : fare)
+    }, 0)
+  const formatFare = (n: number) => `£${n % 1 === 0 ? n : n.toFixed(2)}`
+
+  const dayEarningsLabel = formatFare(fareSum(jobs.filter((j) => isJobCompleted(j.id))))
+  const totalBookedLabel = formatFare(fareSum(jobs))
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-4 md:p-6">
       <style>{`@keyframes radar-sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
@@ -157,22 +179,26 @@ export default function AeroDriverDashboard() {
       <main className="max-w-4xl mx-auto space-y-6">
         
         {/* Quick Stats Banner */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
             <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Today&apos;s Jobs</span>
             <p className="text-2xl font-black text-white mt-0.5">{jobs.length}</p>
           </div>
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
             <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Next Pickup</span>
-            <p className="text-2xl font-black text-amber-400 mt-0.5">14:30</p>
+            <p className="text-2xl font-black text-amber-400 mt-0.5">{nextPickup}</p>
           </div>
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
             <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Monitored Flights</span>
             <p className="text-2xl font-black text-emerald-400 mt-0.5">{activeCount} Live</p>
           </div>
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
+            <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Total Booked</span>
+            <p className="text-2xl font-black text-slate-200 mt-0.5">{totalBookedLabel}</p>
+          </div>
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 col-span-2 md:col-span-1">
             <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Day Earnings</span>
-            <p className="text-2xl font-black text-white mt-0.5">£380</p>
+            <p className="text-2xl font-black text-white mt-0.5">{dayEarningsLabel}</p>
           </div>
         </div>
 
