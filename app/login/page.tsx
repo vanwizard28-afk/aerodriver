@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Car, Plane, Mail, CheckCircle2 } from "lucide-react";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 
@@ -9,6 +9,13 @@ export default function LoginPage() {
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Surface errors bounced back from Supabase / the callback route.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const msg = params.get("error_description") ?? params.get("error");
+    if (msg) queueMicrotask(() => setError(decodeURIComponent(msg.replace(/\+/g, " "))));
+  }, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
