@@ -1,7 +1,9 @@
 "use client"
 
-import React, { useEffect, useState, useSyncExternalStore } from 'react'
-import { Plane, Car, Clock, Navigation, CheckCircle2, ChevronRight, ChevronDown, User, Phone, Radio, Radar, Gauge, PlaneLanding, Luggage, MoveVertical, Plus, X, Presentation, Diamond, MessageSquare, MessageCircle, Copy, Check } from 'lucide-react'
+import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { Plane, Car, Clock, Navigation, CheckCircle2, ChevronRight, ChevronDown, User, Phone, Radio, Radar, Gauge, PlaneLanding, Luggage, MoveVertical, Plus, X, Presentation, Diamond, MessageSquare, MessageCircle, Copy, Check, LogOut } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { supabase, isSupabaseConfigured } from '@/lib/supabase'
 
 const DRIVER_STAGES = ["En Route to Terminal", "At Pickup Point", "Passenger Onboard", "Completed"]
 const NEXT_STAGE_LABELS = ["Mark as Arrived", "Passenger Onboard", "Complete Trip"]
@@ -190,7 +192,51 @@ const normalizeJob = (j: Record<string, unknown>, legacyStages: Record<string, n
   }
 }
 
+type TransferRow = Record<string, unknown>
+
+const rowToJob = (r: TransferRow): Job => ({
+  id: String(r.id),
+  passenger: String(r.passenger ?? ''),
+  phone: String(r.phone ?? ''),
+  flightNo: String(r.flight_no ?? ''),
+  airline: '—',
+  airport: String(r.airport ?? ''),
+  terminal: String(r.terminal ?? '—'),
+  origin: '—',
+  pickupAt: String(r.pickup_at ?? ''),
+  estimatedArrival: 'TBC',
+  altitude: '—',
+  airspeed: '—',
+  progress: 0,
+  baggageBelt: 'TBC',
+  flightStatus: 'Scheduled',
+  statusColor: 'bg-amber-500/20 text-amber-400 border-amber-500/40',
+  pickupPoint: String(r.meeting_point ?? ''),
+  destination: String(r.dropoff ?? 'TBC'),
+  fareAmount: Number(r.fare_amount ?? 0) || 0,
+  parkingFee: Number(r.parking_fee ?? 0) || 0,
+  otherExpenses: Number(r.other_expenses ?? 0) || 0,
+  stage: typeof r.stage === 'number' ? r.stage : 0,
+})
+
+const jobToRow = (j: Job): TransferRow => ({
+  id: j.id,
+  flight_no: j.flightNo,
+  passenger: j.passenger,
+  phone: j.phone,
+  airport: j.airport,
+  terminal: j.terminal,
+  meeting_point: j.pickupPoint,
+  dropoff: j.destination,
+  pickup_at: j.pickupAt || null,
+  fare_amount: j.fareAmount,
+  parking_fee: j.parkingFee,
+  other_expenses: j.otherExpenses,
+  stage: j.stage,
+})
+
 export default function AeroDriverDashboard() {
+  const router = useRouter()
   const [activeTab, setActiveTab] = useState<'upcoming' | 'completed'>('upcoming')
   const [expandedFlight, setExpandedFlight] = useState<string | null>(null)
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
@@ -205,15 +251,20 @@ export default function AeroDriverDashboard() {
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const online = useSyncExternalStore(subscribeOnline, getOnlineSnapshot, getOnlineServerSnapshot)
   const [form, setForm] = useState({ passenger: '', phone: '', flightNo: '', airport: '', meetingPoint: '', pickupHour: '', pickupMinute: '', fare: '', parking: '', expenses: '' })
+  const [userEmail, setUserEmail] = useState('')
+  const [userId, setUserId] = useState<string | null>(null)
+  const expenseTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
   useEffect(() => {
-    queueMicrotask(() => {
+    queueMicrotask(async () => {
+      let localJobs: Job[] = []
       try {
         const storedJobs = localStorage.getItem('aerodriver-jobs')
         const storedStages = localStorage.getItem('aerodriver-stages')
         const legacyStages: Record<string, number> = storedStages ? JSON.parse(storedStages) : {}
         if (storedJobs) {
-          setJobs((JSON.parse(storedJobs) as Record<string, unknown>[]).map((j) => normalizeJob(j, legacyStages)))
+          localJobs = (JSON.parse(storedJobs) as Record<string, unknown>[]).map((j) => normalizeJob(j, legacyStages))
+          setJobs(localJobs)
         }
         const storedTelemetry = localStorage.getItem('aerodriver-telemetry')
         if (storedTelemetry) {
@@ -231,9 +282,71 @@ export default function AeroDriverDashboard() {
         }
         localStorage.removeItem('aerodriver-stages')
       } catch {}
+
+      if (supabase) {
+        try {
+          // getSession reads the local cookie — no network, so the PWA
+          // still boots offline with a valid cached session.
+          const { data: { session } } = await supabase.auth.getSession()
+          if (!session?.user) {
+            router.replace('/login')
+            return
+          }
+          setUserId(session.user.id)
+          setUserEmail(session.user.email ?? '')
+          const { data } = await supabase
+            .from('transfers')
+            .select('*')
+            .order('pickup_at')
+          if (data) {
+            if (data.length === 0 && localJobs.length > 0) {
+              // One-time migration: push localStorage jobs up as transfers.
+              const rows = localJobs.map((j) =>
+                jobToRow({ ...j, id: crypto.randomUUID() })
+              )
+              const { data: inserted } = await supabase
+                .from('transfers')
+                .insert(rows)
+                .select()
+              if (inserted) setJobs(inserted.map((r) => rowToJob(r as TransferRow)))
+            } else {
+              setJobs(data.map((r) => rowToJob(r as TransferRow)))
+            }
+          }
+        } catch {}
+      }
       setStorageLoaded(true)
     })
-  }, [])
+  }, [router])
+
+  // Realtime: apply transfer changes made on other devices instantly.
+  useEffect(() => {
+    if (!supabase || !userId) return
+    const sb = supabase
+    const channel = sb
+      .channel('transfers-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'transfers' },
+        (payload) => {
+          if (payload.eventType === 'DELETE') {
+            const id = String((payload.old as { id?: unknown }).id ?? '')
+            setJobs((prev) => prev.filter((j) => j.id !== id))
+          } else {
+            const job = rowToJob(payload.new as TransferRow)
+            setJobs((prev) =>
+              prev.some((j) => j.id === job.id)
+                ? prev.map((j) => (j.id === job.id ? job : j))
+                : [...prev, job]
+            )
+          }
+        }
+      )
+      .subscribe()
+    return () => {
+      void sb.removeChannel(channel)
+    }
+  }, [userId])
 
   useEffect(() => {
     if (!storageLoaded) return
@@ -308,10 +421,19 @@ export default function AeroDriverDashboard() {
 
   const isCompleted = (j: Job) => j.stage === DRIVER_STAGES.length - 1
 
+  const syncUpdate = (id: string, patch: Record<string, unknown>) => {
+    if (!supabase) return
+    void supabase.from('transfers').update(patch).eq('id', id).then(({ error }) => {
+      if (error) console.error('transfer sync failed:', error.message)
+    })
+  }
+
   const advanceJobStage = (id: string) => {
-    setJobs(prev => prev.map(j => j.id === id
-      ? { ...j, stage: Math.min(j.stage + 1, DRIVER_STAGES.length - 1) }
-      : j))
+    const job = jobs.find(j => j.id === id)
+    if (!job) return
+    const nextStage = Math.min(job.stage + 1, DRIVER_STAGES.length - 1)
+    setJobs(prev => prev.map(j => j.id === id ? { ...j, stage: nextStage } : j))
+    syncUpdate(id, { stage: nextStage })
   }
 
   const handleDelete = (id: string) => {
@@ -319,6 +441,11 @@ export default function AeroDriverDashboard() {
       setJobs(prev => prev.filter(j => j.id !== id))
       if (expandedFlight === id) setExpandedFlight(null)
       setConfirmingDelete(null)
+      if (supabase) {
+        void supabase.from('transfers').delete().eq('id', id).then(({ error }) => {
+          if (error) console.error('transfer delete failed:', error.message)
+        })
+      }
     } else {
       setConfirmingDelete(id)
       setTimeout(() => setConfirmingDelete(prev => (prev === id ? null : prev)), 3000)
@@ -338,7 +465,19 @@ export default function AeroDriverDashboard() {
 
   const updateJobExpense = (id: string, field: 'parkingFee' | 'otherExpenses', value: string) => {
     const n = parseFloat(value)
-    setJobs(prev => prev.map(j => j.id === id ? { ...j, [field]: isNaN(n) ? 0 : n } : j))
+    const val = isNaN(n) ? 0 : n
+    setJobs(prev => prev.map(j => j.id === id ? { ...j, [field]: val } : j))
+    // Debounce — number inputs fire on every keystroke.
+    const key = `${id}:${field}`
+    clearTimeout(expenseTimers.current[key])
+    expenseTimers.current[key] = setTimeout(() => {
+      syncUpdate(id, { [field === 'parkingFee' ? 'parking_fee' : 'other_expenses']: val })
+    }, 600)
+  }
+
+  const handleSignOut = async () => {
+    await supabase?.auth.signOut()
+    router.replace('/login')
   }
 
   const handleAddJob = (e: React.FormEvent) => {
@@ -348,7 +487,7 @@ export default function AeroDriverDashboard() {
     if (pickupDate.getTime() < Date.now()) pickupDate.setDate(pickupDate.getDate() + 1)
 
     const newJob: Job = {
-      id: `JOB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+      id: crypto.randomUUID(),
       passenger: form.passenger,
       phone: form.phone,
       flightNo: form.flightNo.toUpperCase(),
@@ -372,6 +511,11 @@ export default function AeroDriverDashboard() {
       stage: 0,
     }
     setJobs(prev => [...prev, newJob])
+    if (supabase) {
+      void supabase.from('transfers').insert(jobToRow(newJob)).then(({ error }) => {
+        if (error) console.error('transfer insert failed:', error.message)
+      })
+    }
     setActiveTab('upcoming')
     setShowAddJob(false)
     setForm({ passenger: '', phone: '', flightNo: '', airport: '', meetingPoint: '', pickupHour: '', pickupMinute: '', fare: '', parking: '', expenses: '' })
@@ -426,6 +570,16 @@ export default function AeroDriverDashboard() {
             <Plus className="w-4 h-4" />
             Add New Job
           </button>
+          {isSupabaseConfigured && (
+            <button
+              onClick={handleSignOut}
+              title={userEmail ? `Sign out (${userEmail})` : 'Sign out'}
+              aria-label="Sign out"
+              className="bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 p-2.5 rounded-xl transition-colors"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </header>
 
@@ -573,7 +727,7 @@ export default function AeroDriverDashboard() {
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="font-extrabold text-white text-xl">{job.flightNo}</span>
-                        <span className="text-xs text-slate-500 font-mono">• {job.id}</span>
+                        <span className="text-xs text-slate-500 font-mono">• {job.id.slice(0, 8).toUpperCase()}</span>
                       </div>
                       <p className="text-xs font-medium text-slate-400">{airlineLine}</p>
                       {entry && nowMs > 0 && (
