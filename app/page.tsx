@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Plane, Car, Clock, Navigation, CheckCircle2, ChevronRight, ChevronDown, User, Phone, Radio, Radar, Gauge, PlaneLanding, Luggage, MoveVertical, Plus, X, Presentation, Diamond, MessageSquare, MessageCircle, Copy, Check, LogOut, TimerReset, MapPin, Download, Printer, Info } from 'lucide-react'
+import { Plane, Car, Clock, Navigation, CheckCircle2, ChevronRight, ChevronDown, User, Phone, Radio, Radar, Gauge, PlaneLanding, Luggage, MoveVertical, Plus, X, Presentation, Diamond, MessageSquare, MessageCircle, Copy, Check, LogOut, TimerReset, MapPin, Download, Printer, Info, Pencil, CalendarDays, RefreshCw } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { supabase, isSupabaseConfigured } from '@/lib/supabase'
 import { airportGuideFor, type AirportGuide } from '@/lib/airport-guides'
@@ -37,7 +37,7 @@ type Job = {
 const jobExpenses = (j: Job) => (j.parkingFee ?? 0) + (j.otherExpenses ?? 0)
 
 type JobFormField = {
-  name: 'passenger' | 'phone' | 'flightNo' | 'airport' | 'meetingPoint' | 'pickupTime' | 'fare' | 'parking' | 'expenses'
+  name: 'passenger' | 'phone' | 'flightNo' | 'airport' | 'meetingPoint' | 'destination' | 'pickupDate' | 'pickupTime' | 'fare' | 'parking' | 'expenses'
   label: string
   type: string
   placeholder?: string
@@ -52,6 +52,8 @@ const NEW_JOB_FIELDS: JobFormField[] = [
   { name: 'flightNo', label: 'Flight Number', type: 'text', placeholder: 'e.g. BA0249' },
   { name: 'airport', label: 'Airport / Terminal', type: 'text', placeholder: 'e.g. LHR (London Heathrow) T3' },
   { name: 'meetingPoint', label: 'Meeting Point', type: 'text', placeholder: 'e.g. Short Stay Car Park', optional: true },
+  { name: 'destination', label: 'Destination / Drop-off', type: 'text', placeholder: 'e.g. 12 High Street, Derby' },
+  { name: 'pickupDate', label: 'Pickup Date', type: 'date' },
   { name: 'pickupTime', label: 'Pickup Time', type: 'time' },
   { name: 'fare', label: 'Fare (£)', type: 'number', placeholder: '0.00', step: '0.01', min: '0' },
   { name: 'parking', label: 'Parking / Airport Fee (£)', type: 'number', placeholder: '0.00', step: '0.50', min: '0', optional: true },
@@ -162,6 +164,60 @@ const liveStatusColor = (status: string) =>
 
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
+const localDateStr = (d: Date) =>
+  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+
+const EMPTY_JOB_FORM = {
+  passenger: '', phone: '', flightNo: '', airport: '', meetingPoint: '',
+  destination: '', pickupDate: '', pickupHour: '', pickupMinute: '',
+  fare: '', parking: '', expenses: '',
+}
+
+// Offline outbox — ops queued while offline flush when signal returns.
+type OutboxOp = {
+  id: string
+  op: 'insert' | 'update' | 'delete'
+  row?: TransferRow
+  patch?: Record<string, unknown>
+  at: number
+  tries?: number
+}
+const OUTBOX_KEY = 'aerodriver-outbox'
+const OUTBOX_MAX_TRIES = 10
+
+const readOutbox = (): OutboxOp[] => {
+  try {
+    return JSON.parse(localStorage.getItem(OUTBOX_KEY) ?? '[]') as OutboxOp[]
+  } catch {
+    return []
+  }
+}
+
+const writeOutboxRaw = (ops: OutboxOp[]) => {
+  try {
+    localStorage.setItem(OUTBOX_KEY, JSON.stringify(ops))
+  } catch {}
+}
+
+const applyTransferOp = async (op: OutboxOp): Promise<boolean> => {
+  if (!supabase) return true
+  try {
+    const res =
+      op.op === 'delete'
+        ? await supabase.from('transfers').delete().eq('id', op.id)
+        : op.op === 'insert'
+          ? await supabase.from('transfers').upsert(op.row ?? {})
+          : await supabase.from('transfers').update(op.patch ?? {}).eq('id', op.id)
+    if (res.error) {
+      console.error(`transfer ${op.op} failed:`, res.error.message)
+      return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 const formatHHMM = (value: string | Date) => {
   const d = typeof value === 'string' ? new Date(value) : value
   return isNaN(d.getTime()) ? '--:--' : `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
@@ -254,13 +310,17 @@ export default function AeroDriverDashboard() {
   const [showAddJob, setShowAddJob] = useState(false)
   const [greetingJob, setGreetingJob] = useState<Job | null>(null)
   const [guideJob, setGuideJob] = useState<Job | null>(null)
+  const [editingJob, setEditingJob] = useState<Job | null>(null)
+  const [filterDate, setFilterDate] = useState('')
+  const [todayStr, setTodayStr] = useState('')
+  const [outboxCount, setOutboxCount] = useState(0)
   const [telemetry, setTelemetry] = useState<Record<string, StoredTelemetry>>({})
   const [flightErrors, setFlightErrors] = useState<Record<string, FlightError>>({})
   const [nowMs, setNowMs] = useState(0)
   const [travelMinutes, setTravelMinutes] = useState(45)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const online = useSyncExternalStore(subscribeOnline, getOnlineSnapshot, getOnlineServerSnapshot)
-  const [form, setForm] = useState({ passenger: '', phone: '', flightNo: '', airport: '', meetingPoint: '', pickupHour: '', pickupMinute: '', fare: '', parking: '', expenses: '' })
+  const [form, setForm] = useState(EMPTY_JOB_FORM)
   const [userEmail, setUserEmail] = useState('')
   const [userId, setUserId] = useState<string | null>(null)
   const expenseTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
@@ -291,7 +351,9 @@ export default function AeroDriverDashboard() {
           if (!isNaN(n)) setTravelMinutes(n)
         }
         localStorage.removeItem('aerodriver-stages')
+        setOutboxCount(readOutbox().length)
       } catch {}
+      setTodayStr(localDateStr(new Date()))
 
       if (supabase) {
         try {
@@ -412,7 +474,10 @@ export default function AeroDriverDashboard() {
     }
     load()
     const interval = setInterval(load, 5 * 60 * 1000)
-    const tick = setInterval(() => setNowMs(Date.now()), 30 * 1000)
+    const tick = setInterval(() => {
+      setNowMs(Date.now())
+      setTodayStr(localDateStr(new Date()))
+    }, 30 * 1000)
     const onVisible = () => {
       if (document.visibilityState === 'visible') load()
     }
@@ -431,11 +496,67 @@ export default function AeroDriverDashboard() {
 
   const isCompleted = (j: Job) => j.stage === DRIVER_STAGES.length - 1
 
+  // Offline outbox flush — replays queued ops in order, stops on first
+  // failure, drops an op only after OUTBOX_MAX_TRIES attempts.
+  useEffect(() => {
+    if (!supabase || !storageLoaded) return
+    let inFlight = false
+    const flush = async () => {
+      if (inFlight || !navigator.onLine) return
+      inFlight = true
+      try {
+        const ops = readOutbox()
+        for (let i = 0; i < ops.length; i++) {
+          if (!(await applyTransferOp(ops[i]))) {
+            const remaining = ops
+              .slice(i)
+              .map((o, k) => (k === 0 ? { ...o, tries: (o.tries ?? 0) + 1 } : o))
+              .filter((o) => (o.tries ?? 0) <= OUTBOX_MAX_TRIES)
+            writeOutboxRaw(remaining)
+            setOutboxCount(remaining.length)
+            return
+          }
+        }
+        writeOutboxRaw([])
+        setOutboxCount(0)
+      } finally {
+        inFlight = false
+      }
+    }
+    void flush()
+    window.addEventListener('online', flush)
+    const interval = setInterval(flush, 60_000)
+    return () => {
+      window.removeEventListener('online', flush)
+      clearInterval(interval)
+    }
+  }, [online, storageLoaded])
+
+  const enqueueOutbox = (op: OutboxOp) => {
+    const tries = (op.tries ?? 0) + 1
+    if (tries > OUTBOX_MAX_TRIES) {
+      console.warn('dropping sync op after max retries:', op.op, op.id)
+      return
+    }
+    const next = [...readOutbox(), { ...op, tries }]
+    writeOutboxRaw(next)
+    setOutboxCount(next.length)
+  }
+
+  const syncOp = (op: OutboxOp) => {
+    if (!supabase) return
+    if (!navigator.onLine) {
+      enqueueOutbox(op)
+      return
+    }
+    void applyTransferOp(op).then((ok) => {
+      if (!ok) enqueueOutbox(op)
+    })
+  }
+
   const syncUpdate = (id: string, patch: Record<string, unknown>) => {
     if (!supabase) return
-    void supabase.from('transfers').update(patch).eq('id', id).then(({ error }) => {
-      if (error) console.error('transfer sync failed:', error.message)
-    })
+    syncOp({ id, op: 'update', patch, at: Date.now() })
   }
 
   const advanceJobStage = (id: string) => {
@@ -452,9 +573,7 @@ export default function AeroDriverDashboard() {
       if (expandedFlight === id) setExpandedFlight(null)
       setConfirmingDelete(null)
       if (supabase) {
-        void supabase.from('transfers').delete().eq('id', id).then(({ error }) => {
-          if (error) console.error('transfer delete failed:', error.message)
-        })
+        syncOp({ id, op: 'delete', at: Date.now() })
       }
     } else {
       setConfirmingDelete(id)
@@ -490,52 +609,109 @@ export default function AeroDriverDashboard() {
     router.replace('/login')
   }
 
-  const handleAddJob = (e: React.FormEvent) => {
-    e.preventDefault()
-    const pickupDate = new Date()
-    pickupDate.setHours(Number(form.pickupHour), Number(form.pickupMinute), 0, 0)
-    if (pickupDate.getTime() < Date.now()) pickupDate.setDate(pickupDate.getDate() + 1)
-
-    const newJob: Job = {
-      id: crypto.randomUUID(),
-      passenger: form.passenger,
-      phone: form.phone,
-      flightNo: form.flightNo.toUpperCase(),
-      airline: '—',
-      airport: form.airport,
-      terminal: form.airport,
-      origin: '—',
-      pickupAt: pickupDate.toISOString(),
-      estimatedArrival: 'TBC',
-      altitude: 'Awaiting telemetry',
-      airspeed: '—',
-      progress: 0,
-      baggageBelt: 'TBC',
-      flightStatus: 'Scheduled',
-      statusColor: 'bg-amber-500/20 text-amber-400 border-amber-500/40',
-      pickupPoint: form.meetingPoint || form.airport,
-      destination: 'TBC',
-      fareAmount: parseFloat(form.fare) || 0,
-      parkingFee: parseFloat(form.parking) || 0,
-      otherExpenses: parseFloat(form.expenses) || 0,
-      stage: 0,
-    }
-    setJobs(prev => [...prev, newJob])
-    if (supabase) {
-      void supabase.from('transfers').insert(jobToRow(newJob)).then(({ error }) => {
-        if (error) console.error('transfer insert failed:', error.message)
-      })
-    }
-    setActiveTab('upcoming')
+  const closeJobModal = () => {
     setShowAddJob(false)
-    setForm({ passenger: '', phone: '', flightNo: '', airport: '', meetingPoint: '', pickupHour: '', pickupMinute: '', fare: '', parking: '', expenses: '' })
+    setEditingJob(null)
+    setForm(EMPTY_JOB_FORM)
   }
 
-  const visibleJobs = jobs.filter(j => activeTab === 'upcoming' ? !isCompleted(j) : isCompleted(j))
-  const activeCount = jobs.filter(j => !isCompleted(j)).length
-  const completedCount = jobs.length - activeCount
+  const openAddJob = () => {
+    setEditingJob(null)
+    setForm({ ...EMPTY_JOB_FORM, pickupDate: todayStr || localDateStr(new Date()) })
+    setShowAddJob(true)
+  }
 
-  const pickupTimes = jobs
+  const openEditJob = (job: Job) => {
+    const d = new Date(job.pickupAt)
+    const valid = !isNaN(d.getTime())
+    setEditingJob(job)
+    setForm({
+      passenger: job.passenger,
+      phone: job.phone,
+      flightNo: job.flightNo,
+      airport: job.airport,
+      meetingPoint: job.pickupPoint,
+      destination: job.destination === 'TBC' ? '' : job.destination,
+      pickupDate: valid ? localDateStr(d) : todayStr || localDateStr(new Date()),
+      pickupHour: valid ? pad2(d.getHours()) : '',
+      pickupMinute: valid ? pad2(d.getMinutes()) : '',
+      fare: job.fareAmount ? String(job.fareAmount) : '',
+      parking: job.parkingFee ? String(job.parkingFee) : '',
+      expenses: job.otherExpenses ? String(job.otherExpenses) : '',
+    })
+    setShowAddJob(true)
+  }
+
+  const handleSubmitJob = (e: React.FormEvent) => {
+    e.preventDefault()
+    const dateStr = form.pickupDate || todayStr || localDateStr(new Date())
+    const pickupDate = new Date(`${dateStr}T${form.pickupHour}:${form.pickupMinute}:00`)
+
+    if (editingJob) {
+      const updated: Job = {
+        ...editingJob,
+        passenger: form.passenger,
+        phone: form.phone,
+        flightNo: form.flightNo.toUpperCase(),
+        airport: form.airport,
+        terminal: form.airport,
+        pickupAt: pickupDate.toISOString(),
+        pickupPoint: form.meetingPoint || form.airport,
+        destination: form.destination || 'TBC',
+        fareAmount: parseFloat(form.fare) || 0,
+        parkingFee: parseFloat(form.parking) || 0,
+        otherExpenses: parseFloat(form.expenses) || 0,
+      }
+      setJobs(prev => prev.map(j => (j.id === updated.id ? updated : j)))
+      const patch = { ...jobToRow(updated) }
+      delete patch.id
+      syncUpdate(updated.id, patch)
+    } else {
+      const newJob: Job = {
+        id: crypto.randomUUID(),
+        passenger: form.passenger,
+        phone: form.phone,
+        flightNo: form.flightNo.toUpperCase(),
+        airline: '—',
+        airport: form.airport,
+        terminal: form.airport,
+        origin: '—',
+        pickupAt: pickupDate.toISOString(),
+        estimatedArrival: 'TBC',
+        altitude: 'Awaiting telemetry',
+        airspeed: '—',
+        progress: 0,
+        baggageBelt: 'TBC',
+        flightStatus: 'Scheduled',
+        statusColor: 'bg-amber-500/20 text-amber-400 border-amber-500/40',
+        pickupPoint: form.meetingPoint || form.airport,
+        destination: form.destination || 'TBC',
+        fareAmount: parseFloat(form.fare) || 0,
+        parkingFee: parseFloat(form.parking) || 0,
+        otherExpenses: parseFloat(form.expenses) || 0,
+        stage: 0,
+      }
+      setJobs(prev => [...prev, newJob])
+      syncOp({ id: newJob.id, op: 'insert', row: jobToRow(newJob), at: Date.now() })
+      setActiveTab('upcoming')
+    }
+    // Make sure the saved job is visible — jump the day filter to its date.
+    setFilterDate(localDateStr(pickupDate))
+    closeJobModal()
+  }
+
+  // Day scoping — '' falls back to today once todayStr is populated on mount.
+  const activeDate = filterDate || todayStr
+  const onActiveDate = (j: Job) =>
+    activeDate !== '' && localDateStr(new Date(j.pickupAt)) === activeDate
+  const jobsOnDate = jobs.filter(onActiveDate)
+  const isViewingToday = activeDate === todayStr
+
+  const visibleJobs = jobsOnDate.filter(j => activeTab === 'upcoming' ? !isCompleted(j) : isCompleted(j))
+  const activeCount = jobsOnDate.filter(j => !isCompleted(j)).length
+  const completedCount = jobsOnDate.length - activeCount
+
+  const pickupTimes = jobsOnDate
     .filter((j) => !isCompleted(j))
     .map((j) => new Date(j.pickupAt).getTime())
     .filter((t) => !isNaN(t))
@@ -544,13 +720,13 @@ export default function AeroDriverDashboard() {
   const fareSum = (list: Job[]) => list.reduce((sum, j) => sum + j.fareAmount, 0)
   const formatFare = (n: number) => `£${n % 1 === 0 ? n : n.toFixed(2)}`
 
-  const dayEarningsLabel = formatFare(fareSum(jobs.filter(isCompleted)))
-  const totalExpenses = jobs.reduce((s, j) => s + jobExpenses(j), 0)
-  const grossFaresLabel = formatFare(fareSum(jobs))
+  const dayEarningsLabel = formatFare(fareSum(jobsOnDate.filter(isCompleted)))
+  const totalExpenses = jobsOnDate.reduce((s, j) => s + jobExpenses(j), 0)
+  const grossFaresLabel = formatFare(fareSum(jobsOnDate))
   const expensesLabel = formatFare(totalExpenses)
-  const netProfitLabel = formatFare(fareSum(jobs) - totalExpenses)
+  const netProfitLabel = formatFare(fareSum(jobsOnDate) - totalExpenses)
 
-  const completedJobs = jobs.filter(isCompleted)
+  const completedJobs = jobsOnDate.filter(isCompleted)
   const invoiceDate = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
 
   const csvEscape = (v: string | number) => {
@@ -584,7 +760,7 @@ export default function AeroDriverDashboard() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `aerodriver-transfers-${new Date().toISOString().slice(0, 10)}.csv`
+    a.download = `aerodriver-transfers-${activeDate || 'all'}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -618,7 +794,7 @@ export default function AeroDriverDashboard() {
         @media print { body { margin: 0; } }
       </style></head><body>
       <h1>AeroDriver — Transfer Invoice</h1>
-      <p class="sub">${esc(userEmail || 'Driver account')} · Issued ${esc(invoiceDate)} · ${completedJobs.length} completed trip${completedJobs.length === 1 ? '' : 's'}</p>
+      <p class="sub">${esc(userEmail || 'Driver account')} · ${isViewingToday ? 'Today' : esc(activeDate)} · Issued ${esc(invoiceDate)} · ${completedJobs.length} completed trip${completedJobs.length === 1 ? '' : 's'}</p>
       <table><thead><tr><th>Date</th><th>Passenger</th><th>Flight</th><th>Airport</th><th>Meeting Point</th><th style="text-align:right">Fare</th></tr></thead>
       <tbody>${rows}</tbody></table>
       <div class="totals">
@@ -655,8 +831,17 @@ export default function AeroDriverDashboard() {
             <span className={`w-2.5 h-2.5 rounded-full ${online ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
             {online ? 'Live Flight Tracking Active' : 'Offline — Last Known Data'}
           </div>
+          {outboxCount > 0 && (
+            <div
+              title="Changes made offline will sync when signal returns"
+              className="flex items-center gap-1.5 bg-slate-900 border border-sky-500/40 text-sky-300 px-3 py-1.5 rounded-full text-xs font-semibold"
+            >
+              <RefreshCw className="w-3 h-3" />
+              {outboxCount} pending sync
+            </div>
+          )}
           <button
-            onClick={() => setShowAddJob(true)}
+            onClick={openAddJob}
             className="bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold px-4 py-2 rounded-xl flex items-center gap-1.5 text-sm transition-all shadow-md shadow-amber-400/10"
           >
             <Plus className="w-4 h-4" />
@@ -686,11 +871,32 @@ export default function AeroDriverDashboard() {
           </div>
         )}
 
+        {/* Day Filter */}
+        <div className="flex items-center gap-2">
+          <CalendarDays className="w-4 h-4 text-amber-400" />
+          <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Showing:</span>
+          <input
+            type="date"
+            value={activeDate}
+            onChange={(e) => setFilterDate(e.target.value)}
+            aria-label="Filter jobs by date"
+            className="bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-bold outline-none focus:border-amber-400 transition-colors [color-scheme:dark]"
+          />
+          {!isViewingToday && (
+            <button
+              onClick={() => setFilterDate(todayStr)}
+              className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-amber-400/15 border border-amber-400/40 text-amber-300 hover:bg-amber-400/25 transition-colors"
+            >
+              Back to Today
+            </button>
+          )}
+        </div>
+
         {/* Quick Stats Banner */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
-            <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Today&apos;s Jobs</span>
-            <p className="text-2xl font-black text-white mt-0.5">{jobs.length}</p>
+            <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">{isViewingToday ? 'Today\u2019s' : 'Day'} Jobs</span>
+            <p className="text-2xl font-black text-white mt-0.5">{jobsOnDate.length}</p>
           </div>
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
             <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Next Pickup</span>
@@ -772,7 +978,7 @@ export default function AeroDriverDashboard() {
             onClick={() => setActiveTab('completed')}
             className={`pb-3 border-b-2 transition-colors ${activeTab === 'completed' ? 'border-amber-400 text-amber-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
           >
-            Completed Today ({completedCount})
+            Completed ({completedCount})
           </button>
         </div>
 
@@ -780,7 +986,11 @@ export default function AeroDriverDashboard() {
         <div className="space-y-5">
           {visibleJobs.length === 0 && (
             <div className="bg-slate-900/60 border border-dashed border-slate-800 rounded-2xl p-8 text-center text-sm text-slate-500">
-              {activeTab === 'upcoming' ? 'No active trips — click "Add New Job" to get started.' : 'No trips completed yet.'}
+              {jobsOnDate.length === 0 && jobs.length > 0
+                ? `No trips on ${activeDate} — ${jobs.length} job${jobs.length === 1 ? '' : 's'} exist on other dates.`
+                : activeTab === 'upcoming'
+                  ? 'No active trips — click "Add New Job" to get started.'
+                  : 'No trips completed on this date.'}
             </div>
           )}
 
@@ -893,6 +1103,14 @@ export default function AeroDriverDashboard() {
                             : 'Telemetry Error'}
                       </div>
                     )}
+                    <button
+                      onClick={() => openEditJob(job)}
+                      aria-label={`Edit job ${job.id}`}
+                      title="Edit job"
+                      className="text-slate-500 hover:text-amber-300 hover:bg-amber-400/10 border border-transparent hover:border-amber-400/30 rounded-lg p-1.5 transition-all"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
                     <button
                       onClick={() => handleDelete(job.id)}
                       aria-label={confirmingDelete === job.id ? `Confirm delete job ${job.id}` : `Delete job ${job.id}`}
@@ -1257,7 +1475,7 @@ export default function AeroDriverDashboard() {
       {showAddJob && (
         <div
           className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex justify-center overflow-y-auto p-4 pb-8 pt-[max(2rem,calc(env(safe-area-inset-top,0px)_+_0.75rem))]"
-          onClick={() => setShowAddJob(false)}
+          onClick={closeJobModal}
         >
           <div
             className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl my-auto"
@@ -1266,19 +1484,19 @@ export default function AeroDriverDashboard() {
             <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-5">
               <div className="flex items-center gap-2.5">
                 <div className="bg-amber-400/10 text-amber-400 p-2 rounded-lg border border-amber-400/20">
-                  <Plus className="w-4 h-4" />
+                  {editingJob ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
                 </div>
-                <h2 className="text-lg font-bold text-white">Add New Job</h2>
+                <h2 className="text-lg font-bold text-white">{editingJob ? 'Edit Job' : 'Add New Job'}</h2>
               </div>
               <button 
-                onClick={() => setShowAddJob(false)}
+                onClick={closeJobModal}
                 className="text-slate-400 hover:text-white transition-colors p-1"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleAddJob} className="space-y-3.5">
+            <form onSubmit={handleSubmitJob} className="space-y-3.5">
               {NEW_JOB_FIELDS.map((field) => (
                 <div key={field.name}>
                   <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">
@@ -1306,6 +1524,9 @@ export default function AeroDriverDashboard() {
                         className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400 transition-colors [color-scheme:dark]"
                       >
                         <option value="" disabled>MM</option>
+                        {form.pickupMinute && !PICKUP_MINUTES.includes(form.pickupMinute) && (
+                          <option value={form.pickupMinute}>{form.pickupMinute}</option>
+                        )}
                         {PICKUP_MINUTES.map((m) => (
                           <option key={m} value={m}>{m}</option>
                         ))}
@@ -1366,7 +1587,7 @@ export default function AeroDriverDashboard() {
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowAddJob(false)}
+                  onClick={closeJobModal}
                   className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold px-4 py-2.5 rounded-xl text-sm transition-all border border-slate-700"
                 >
                   Cancel
@@ -1376,7 +1597,7 @@ export default function AeroDriverDashboard() {
                   className="flex-1 bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold px-4 py-2.5 rounded-xl text-sm transition-all shadow-md shadow-amber-400/10 flex items-center justify-center gap-1.5"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  Add Job
+                  {editingJob ? 'Save Changes' : 'Add Job'}
                 </button>
               </div>
             </form>
