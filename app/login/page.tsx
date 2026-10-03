@@ -60,6 +60,12 @@ export default function LoginPage() {
               We sent a sign-in link to <span className="text-amber-400">{email}</span>.
               Open it on this device to continue.
             </p>
+            <p className="text-[11px] text-slate-500 mt-4 leading-relaxed">
+              Tip: if the link opens inside your mail app&apos;s mini-browser,
+              copy the full link and open it in your main browser instead —
+              sign-in only completes in a browser that can share cookies
+              with the AeroDriver app.
+            </p>
           </div>
         ) : (
           <form onSubmit={submit} className="space-y-4">

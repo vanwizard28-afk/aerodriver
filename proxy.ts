@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { SUPABASE_COOKIE_OPTIONS } from "@/lib/supabase-cookies";
 
 const PUBLIC_PATHS = ["/login", "/auth/callback", "/auth/confirm"];
 
@@ -11,6 +12,7 @@ export async function proxy(request: NextRequest) {
 
   let response = NextResponse.next({ request });
   const supabase = createServerClient(url, anonKey, {
+    cookieOptions: SUPABASE_COOKIE_OPTIONS,
     cookies: {
       getAll() {
         return request.cookies.getAll();

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import type { EmailOtpType } from "@supabase/supabase-js";
+import { SUPABASE_COOKIE_OPTIONS } from "@/lib/supabase-cookies";
 
 // Canonical Supabase SSR confirm endpoint. Handles the link formats
 // whose credentials live in the query string (?code=, ?token_hash=).
@@ -25,6 +26,7 @@ export async function GET(request: Request) {
 
   const cookieStore = await cookies();
   const supabase = createServerClient(url, anonKey, {
+    cookieOptions: SUPABASE_COOKIE_OPTIONS,
     cookies: {
       getAll() {
         return cookieStore.getAll();
