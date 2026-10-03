@@ -26,11 +26,15 @@ type Job = {
   pickupPoint: string
   destination: string
   fareAmount: number
+  parkingFee: number
+  otherExpenses: number
   stage: number
 }
 
+const jobExpenses = (j: Job) => (j.parkingFee ?? 0) + (j.otherExpenses ?? 0)
+
 type JobFormField = {
-  name: 'passenger' | 'phone' | 'flightNo' | 'airport' | 'meetingPoint' | 'pickupTime' | 'fare'
+  name: 'passenger' | 'phone' | 'flightNo' | 'airport' | 'meetingPoint' | 'pickupTime' | 'fare' | 'parking' | 'expenses'
   label: string
   type: string
   placeholder?: string
@@ -47,6 +51,16 @@ const NEW_JOB_FIELDS: JobFormField[] = [
   { name: 'meetingPoint', label: 'Meeting Point', type: 'text', placeholder: 'e.g. Short Stay Car Park', optional: true },
   { name: 'pickupTime', label: 'Pickup Time', type: 'time' },
   { name: 'fare', label: 'Fare (£)', type: 'number', placeholder: '0.00', step: '0.01', min: '0' },
+  { name: 'parking', label: 'Parking / Airport Fee (£)', type: 'number', placeholder: '0.00', step: '0.50', min: '0', optional: true },
+  { name: 'expenses', label: 'Other Expenses (£)', type: 'number', placeholder: '0.00', step: '0.50', min: '0', optional: true },
+]
+
+const PARKING_PRESETS = [
+  { label: 'EMA (£5)', value: '5' },
+  { label: 'BHX (£6)', value: '6' },
+  { label: 'LHR (£5)', value: '5' },
+  { label: 'MAN (£6)', value: '6' },
+  { label: 'LTN (£5)', value: '5' },
 ]
 
 const MEETING_PRESETS = [
@@ -170,6 +184,8 @@ const normalizeJob = (j: Record<string, unknown>, legacyStages: Record<string, n
       typeof j.fareAmount === 'number'
         ? j.fareAmount
         : parseFloat(String(j.fare ?? '').replace(/[^0-9.]/g, '')) || 0,
+    parkingFee: typeof j.parkingFee === 'number' ? j.parkingFee : 0,
+    otherExpenses: typeof j.otherExpenses === 'number' ? j.otherExpenses : 0,
     stage: typeof j.stage === 'number' ? j.stage : (legacyStages[String(j.id)] ?? 0),
   }
 }
@@ -188,7 +204,7 @@ export default function AeroDriverDashboard() {
   const [travelMinutes, setTravelMinutes] = useState(45)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const online = useSyncExternalStore(subscribeOnline, getOnlineSnapshot, getOnlineServerSnapshot)
-  const [form, setForm] = useState({ passenger: '', phone: '', flightNo: '', airport: '', meetingPoint: '', pickupHour: '', pickupMinute: '', fare: '' })
+  const [form, setForm] = useState({ passenger: '', phone: '', flightNo: '', airport: '', meetingPoint: '', pickupHour: '', pickupMinute: '', fare: '', parking: '', expenses: '' })
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -320,6 +336,11 @@ export default function AeroDriverDashboard() {
     }
   }
 
+  const updateJobExpense = (id: string, field: 'parkingFee' | 'otherExpenses', value: string) => {
+    const n = parseFloat(value)
+    setJobs(prev => prev.map(j => j.id === id ? { ...j, [field]: isNaN(n) ? 0 : n } : j))
+  }
+
   const handleAddJob = (e: React.FormEvent) => {
     e.preventDefault()
     const pickupDate = new Date()
@@ -346,12 +367,14 @@ export default function AeroDriverDashboard() {
       pickupPoint: form.meetingPoint || form.airport,
       destination: 'TBC',
       fareAmount: parseFloat(form.fare) || 0,
+      parkingFee: parseFloat(form.parking) || 0,
+      otherExpenses: parseFloat(form.expenses) || 0,
       stage: 0,
     }
     setJobs(prev => [...prev, newJob])
     setActiveTab('upcoming')
     setShowAddJob(false)
-    setForm({ passenger: '', phone: '', flightNo: '', airport: '', meetingPoint: '', pickupHour: '', pickupMinute: '', fare: '' })
+    setForm({ passenger: '', phone: '', flightNo: '', airport: '', meetingPoint: '', pickupHour: '', pickupMinute: '', fare: '', parking: '', expenses: '' })
   }
 
   const visibleJobs = jobs.filter(j => activeTab === 'upcoming' ? !isCompleted(j) : isCompleted(j))
@@ -368,7 +391,10 @@ export default function AeroDriverDashboard() {
   const formatFare = (n: number) => `£${n % 1 === 0 ? n : n.toFixed(2)}`
 
   const dayEarningsLabel = formatFare(fareSum(jobs.filter(isCompleted)))
-  const totalBookedLabel = formatFare(fareSum(jobs))
+  const totalExpenses = jobs.reduce((s, j) => s + jobExpenses(j), 0)
+  const grossFaresLabel = formatFare(fareSum(jobs))
+  const expensesLabel = formatFare(totalExpenses)
+  const netProfitLabel = formatFare(fareSum(jobs) - totalExpenses)
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-4 md:p-6">
@@ -415,7 +441,7 @@ export default function AeroDriverDashboard() {
         )}
 
         {/* Quick Stats Banner */}
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
             <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Today&apos;s Jobs</span>
             <p className="text-2xl font-black text-white mt-0.5">{jobs.length}</p>
@@ -429,14 +455,6 @@ export default function AeroDriverDashboard() {
             <p className="text-2xl font-black text-emerald-400 mt-0.5">{activeCount} Live</p>
           </div>
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
-            <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Total Booked</span>
-            <p className="text-2xl font-black text-slate-200 mt-0.5">{totalBookedLabel}</p>
-          </div>
-          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 col-span-2 md:col-span-1">
-            <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Day Earnings</span>
-            <p className="text-2xl font-black text-white mt-0.5">{dayEarningsLabel}</p>
-          </div>
-          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 col-span-2 md:col-span-1">
             <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Drive to Airport</span>
             <select
               value={travelMinutes}
@@ -448,6 +466,22 @@ export default function AeroDriverDashboard() {
                 <option key={m} value={m}>{m} min</option>
               ))}
             </select>
+          </div>
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
+            <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Gross Fares</span>
+            <p className="text-2xl font-black text-slate-200 mt-0.5">{grossFaresLabel}</p>
+          </div>
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
+            <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Total Expenses</span>
+            <p className="text-2xl font-black text-slate-200 mt-0.5">{expensesLabel}</p>
+          </div>
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
+            <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Day Earnings</span>
+            <p className="text-2xl font-black text-white mt-0.5">{dayEarningsLabel}</p>
+          </div>
+          <div className="bg-slate-900/90 border border-emerald-500/30 rounded-xl p-3.5">
+            <span className="text-xs text-emerald-400/80 uppercase tracking-wider font-semibold">Net Profit</span>
+            <p className="text-2xl font-black text-emerald-400 mt-0.5">{netProfitLabel}</p>
           </div>
         </div>
 
@@ -649,8 +683,41 @@ export default function AeroDriverDashboard() {
                       </div>
                     </div>
                     <div className="text-xs pt-1 border-t border-slate-800/60">
-                      <span className="text-slate-400 font-bold block mb-0.5">Drop-off Destination:</span> 
+                      <span className="text-slate-400 font-bold block mb-0.5">Drop-off Destination:</span>
                       <span className="text-slate-300">{job.destination}</span>
+                    </div>
+                    <div className="text-xs pt-1 border-t border-slate-800/60">
+                      <span className="text-slate-400 font-bold block mb-1">Expenses (£):</span>
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-1.5 text-slate-400">
+                          Parking
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.50"
+                            inputMode="decimal"
+                            aria-label="Parking fee"
+                            value={job.parkingFee || ''}
+                            onChange={(e) => updateJobExpense(job.id, 'parkingFee', e.target.value)}
+                            placeholder="0"
+                            className="w-16 bg-slate-900 border border-slate-700 rounded-md px-1.5 py-0.5 text-slate-200 outline-none focus:border-amber-400 transition-colors [color-scheme:dark]"
+                          />
+                        </label>
+                        <label className="flex items-center gap-1.5 text-slate-400">
+                          Other
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.50"
+                            inputMode="decimal"
+                            aria-label="Other expenses"
+                            value={job.otherExpenses || ''}
+                            onChange={(e) => updateJobExpense(job.id, 'otherExpenses', e.target.value)}
+                            placeholder="0"
+                            className="w-16 bg-slate-900 border border-slate-700 rounded-md px-1.5 py-0.5 text-slate-200 outline-none focus:border-amber-400 transition-colors [color-scheme:dark]"
+                          />
+                        </label>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -827,6 +894,15 @@ export default function AeroDriverDashboard() {
                         {departNow ? 'Now' : formatHHMM(new Date(leaveByMs))}
                       </span>
                     </div>
+                    {jobExpenses(job) > 0 && (
+                      <div>
+                        <span className="text-xs text-slate-500 block">Net</span>
+                        <span className="text-xl font-black text-emerald-400">{formatFare(job.fareAmount - jobExpenses(job))}</span>
+                        <span className="text-[10px] text-slate-500 block">
+                          {formatFare(job.fareAmount)} − {formatFare(job.parkingFee)} park − {formatFare(job.otherExpenses)} other
+                        </span>
+                      </div>
+                    )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <button 
@@ -950,6 +1026,24 @@ export default function AeroDriverDashboard() {
                           }`}
                         >
                           {p}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {field.name === 'parking' && (
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {PARKING_PRESETS.map((p) => (
+                        <button
+                          key={p.label}
+                          type="button"
+                          onClick={() => setForm({ ...form, parking: p.value })}
+                          className={`text-[10px] font-bold px-2.5 py-1 rounded-full border transition-colors ${
+                            form.parking === p.value
+                              ? 'bg-amber-400/15 border-amber-400/50 text-amber-300'
+                              : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-amber-400/50 hover:text-amber-300'
+                          }`}
+                        >
+                          {p.label}
                         </button>
                       ))}
                     </div>
