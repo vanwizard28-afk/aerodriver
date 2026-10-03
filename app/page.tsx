@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useState, useSyncExternalStore } from 'react'
-import { Plane, Car, Clock, Navigation, CheckCircle2, ChevronRight, ChevronDown, User, Phone, Radio, Radar, Gauge, PlaneLanding, Luggage, MoveVertical, Plus, X, Presentation, Diamond } from 'lucide-react'
+import { Plane, Car, Clock, Navigation, CheckCircle2, ChevronRight, ChevronDown, User, Phone, Radio, Radar, Gauge, PlaneLanding, Luggage, MoveVertical, Plus, X, Presentation, Diamond, MessageSquare, MessageCircle, Copy, Check } from 'lucide-react'
 
 const DRIVER_STAGES = ["En Route to Terminal", "At Pickup Point", "Passenger Onboard", "Completed"]
 const NEXT_STAGE_LABELS = ["Mark as Arrived", "Passenger Onboard", "Complete Trip"]
@@ -30,12 +30,13 @@ type Job = {
 }
 
 type JobFormField = {
-  name: 'passenger' | 'phone' | 'flightNo' | 'airport' | 'pickupTime' | 'fare'
+  name: 'passenger' | 'phone' | 'flightNo' | 'airport' | 'meetingPoint' | 'pickupTime' | 'fare'
   label: string
   type: string
   placeholder?: string
   step?: string
   min?: string
+  optional?: boolean
 }
 
 const NEW_JOB_FIELDS: JobFormField[] = [
@@ -43,9 +44,20 @@ const NEW_JOB_FIELDS: JobFormField[] = [
   { name: 'phone', label: 'Phone Number', type: 'tel', placeholder: '+44 7700 900000' },
   { name: 'flightNo', label: 'Flight Number', type: 'text', placeholder: 'e.g. BA0249' },
   { name: 'airport', label: 'Airport / Terminal', type: 'text', placeholder: 'e.g. LHR (London Heathrow) T3' },
+  { name: 'meetingPoint', label: 'Meeting Point', type: 'text', placeholder: 'e.g. Short Stay Car Park', optional: true },
   { name: 'pickupTime', label: 'Pickup Time', type: 'time' },
   { name: 'fare', label: 'Fare (£)', type: 'number', placeholder: '0.00', step: '0.01', min: '0' },
 ]
+
+const MEETING_PRESETS = [
+  'Short Stay Car Park',
+  'Express Drop-off Zone',
+  'Costa Coffee — Arrivals Hall',
+  'Arrivals Hall — Main Exit',
+  'Station / Rail Link Entrance',
+]
+
+const TRAVEL_MINUTE_OPTIONS = [15, 30, 45, 60, 90, 120]
 
 const PICKUP_HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'))
 const PICKUP_MINUTES = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0'))
@@ -84,6 +96,26 @@ const getOnlineSnapshot = () => navigator.onLine
 const getOnlineServerSnapshot = () => true
 
 const STALE_MS = 10 * 60 * 1000
+
+const copyText = async (text: string) => {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    document.body.appendChild(ta)
+    ta.select()
+    try {
+      document.execCommand('copy')
+      return true
+    } catch {
+      return false
+    } finally {
+      document.body.removeChild(ta)
+    }
+  }
+}
 
 const formatAge = (ms: number) => {
   if (ms < 60_000) return 'Updated just now'
@@ -153,8 +185,10 @@ export default function AeroDriverDashboard() {
   const [telemetry, setTelemetry] = useState<Record<string, StoredTelemetry>>({})
   const [flightErrors, setFlightErrors] = useState<Record<string, FlightError>>({})
   const [nowMs, setNowMs] = useState(0)
+  const [travelMinutes, setTravelMinutes] = useState(45)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
   const online = useSyncExternalStore(subscribeOnline, getOnlineSnapshot, getOnlineServerSnapshot)
-  const [form, setForm] = useState({ passenger: '', phone: '', flightNo: '', airport: '', pickupHour: '', pickupMinute: '', fare: '' })
+  const [form, setForm] = useState({ passenger: '', phone: '', flightNo: '', airport: '', meetingPoint: '', pickupHour: '', pickupMinute: '', fare: '' })
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -174,6 +208,11 @@ export default function AeroDriverDashboard() {
           }
           setTelemetry(valid)
         }
+        const storedTravel = localStorage.getItem('aerodriver-travel-mins')
+        if (storedTravel) {
+          const n = parseInt(storedTravel, 10)
+          if (!isNaN(n)) setTravelMinutes(n)
+        }
         localStorage.removeItem('aerodriver-stages')
       } catch {}
       setStorageLoaded(true)
@@ -184,7 +223,8 @@ export default function AeroDriverDashboard() {
     if (!storageLoaded) return
     localStorage.setItem('aerodriver-jobs', JSON.stringify(jobs))
     localStorage.setItem('aerodriver-telemetry', JSON.stringify(telemetry))
-  }, [jobs, telemetry, storageLoaded])
+    localStorage.setItem('aerodriver-travel-mins', String(travelMinutes))
+  }, [jobs, telemetry, travelMinutes, storageLoaded])
 
   const flightKey = jobs.map((j) => flightCode(j.flightNo)).filter(Boolean).join(',')
 
@@ -273,6 +313,13 @@ export default function AeroDriverDashboard() {
     window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(pickup)}`, '_blank')
   }
 
+  const handleCopyPoint = async (id: string, text: string) => {
+    if (await copyText(text)) {
+      setCopiedId(id)
+      setTimeout(() => setCopiedId((prev) => (prev === id ? null : prev)), 1500)
+    }
+  }
+
   const handleAddJob = (e: React.FormEvent) => {
     e.preventDefault()
     const pickupDate = new Date()
@@ -296,7 +343,7 @@ export default function AeroDriverDashboard() {
       baggageBelt: 'TBC',
       flightStatus: 'Scheduled',
       statusColor: 'bg-amber-500/20 text-amber-400 border-amber-500/40',
-      pickupPoint: form.airport,
+      pickupPoint: form.meetingPoint || form.airport,
       destination: 'TBC',
       fareAmount: parseFloat(form.fare) || 0,
       stage: 0,
@@ -304,7 +351,7 @@ export default function AeroDriverDashboard() {
     setJobs(prev => [...prev, newJob])
     setActiveTab('upcoming')
     setShowAddJob(false)
-    setForm({ passenger: '', phone: '', flightNo: '', airport: '', pickupHour: '', pickupMinute: '', fare: '' })
+    setForm({ passenger: '', phone: '', flightNo: '', airport: '', meetingPoint: '', pickupHour: '', pickupMinute: '', fare: '' })
   }
 
   const visibleJobs = jobs.filter(j => activeTab === 'upcoming' ? !isCompleted(j) : isCompleted(j))
@@ -368,7 +415,7 @@ export default function AeroDriverDashboard() {
         )}
 
         {/* Quick Stats Banner */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
             <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Today&apos;s Jobs</span>
             <p className="text-2xl font-black text-white mt-0.5">{jobs.length}</p>
@@ -388,6 +435,19 @@ export default function AeroDriverDashboard() {
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 col-span-2 md:col-span-1">
             <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Day Earnings</span>
             <p className="text-2xl font-black text-white mt-0.5">{dayEarningsLabel}</p>
+          </div>
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 col-span-2 md:col-span-1">
+            <span className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Drive to Airport</span>
+            <select
+              value={travelMinutes}
+              onChange={(e) => setTravelMinutes(Number(e.target.value))}
+              aria-label="Drive time to airport"
+              className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-base text-amber-400 font-black outline-none focus:border-amber-400 transition-colors [color-scheme:dark]"
+            >
+              {TRAVEL_MINUTE_OPTIONS.map((m) => (
+                <option key={m} value={m}>{m} min</option>
+              ))}
+            </select>
           </div>
         </div>
 
@@ -451,6 +511,10 @@ export default function AeroDriverDashboard() {
             const terminal = live && live.terminal !== 'TBC' ? `Terminal ${live.terminal}` : job.terminal
             const belt = live?.baggageBelt ?? job.baggageBelt
             const airlineLine = live ? `${live.airline} — ${live.destination}` : `${job.airline} — ${job.airport}`
+            const contactMessage = `Hi ${job.passenger.split(' ')[0] || 'there'}, this is your driver. I'm tracking flight ${job.flightNo} (${flightStatusLabel}, est. touchdown ${estArrival}). I will meet you at ${job.pickupPoint}.`
+            const waPhone = job.phone.replace(/\D/g, '').replace(/^00/, '').replace(/^0/, '44')
+            const leaveByMs = (Number.isFinite(touchdownMs) ? touchdownMs : Date.parse(job.pickupAt)) - travelMinutes * 60_000
+            const departNow = nowMs > 0 && Number.isFinite(leaveByMs) && leaveByMs <= nowMs
 
             const t = progress / 100
             const p0 = { x: 24, y: 116 }
@@ -535,6 +599,32 @@ export default function AeroDriverDashboard() {
                       <Phone className="w-4 h-4 text-slate-400" />
                       <span>{job.phone}</span>
                     </div>
+                    {job.phone && (
+                      <div className="flex items-center gap-2 pt-0.5">
+                        <a
+                          href={`tel:${job.phone}`}
+                          className="flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 hover:border-emerald-500/50 hover:text-emerald-300 transition-colors"
+                        >
+                          <Phone className="w-3.5 h-3.5" /> Call
+                        </a>
+                        <a
+                          href={`sms:${job.phone}?&body=${encodeURIComponent(contactMessage)}`}
+                          className="flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 hover:border-emerald-500/50 hover:text-emerald-300 transition-colors"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" /> SMS
+                        </a>
+                        {waPhone && (
+                          <a
+                            href={`https://wa.me/${waPhone}?text=${encodeURIComponent(contactMessage)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 hover:border-emerald-500/50 hover:text-emerald-300 transition-colors"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" /> WhatsApp
+                          </a>
+                        )}
+                      </div>
+                    )}
                     <div className="flex items-center gap-2.5 text-slate-300">
                       <Clock className="w-4 h-4 text-slate-400" />
                       <span>Pickup Time: <strong className="text-amber-400">{formatHHMM(job.pickupAt)}</strong></span>
@@ -543,8 +633,20 @@ export default function AeroDriverDashboard() {
 
                   <div className="space-y-2 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
                     <div className="text-xs">
-                      <span className="text-amber-400 font-bold block mb-0.5">Meeting Point:</span> 
-                      <span className="text-slate-200">{job.pickupPoint}</span>
+                      <span className="text-amber-400 font-bold block mb-0.5">Meeting Point:</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-slate-200">{job.pickupPoint}</span>
+                        <button
+                          onClick={() => handleCopyPoint(job.id, job.pickupPoint)}
+                          title="Copy meeting point"
+                          aria-label="Copy meeting point"
+                          className="p-1 rounded-md text-slate-500 hover:text-amber-300 hover:bg-slate-800 transition-colors"
+                        >
+                          {copiedId === job.id
+                            ? <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            : <Copy className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
                     </div>
                     <div className="text-xs pt-1 border-t border-slate-800/60">
                       <span className="text-slate-400 font-bold block mb-0.5">Drop-off Destination:</span> 
@@ -711,9 +813,20 @@ export default function AeroDriverDashboard() {
 
                 {/* Card Action Footer */}
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                  <div>
-                    <span className="text-xs text-slate-500 block">Fare Value</span>
-                    <span className="text-xl font-black text-white">{formatFare(job.fareAmount)}</span>
+                  <div className="flex flex-wrap items-center gap-6">
+                    <div>
+                      <span className="text-xs text-slate-500 block">Fare Value</span>
+                      <span className="text-xl font-black text-white">{formatFare(job.fareAmount)}</span>
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-500 block">Leave By</span>
+                      <span
+                        title={`Touchdown minus ${travelMinutes} min drive`}
+                        className={`text-xl font-black ${departNow ? 'text-red-400 animate-pulse' : 'text-amber-400'}`}
+                      >
+                        {departNow ? 'Now' : formatHHMM(new Date(leaveByMs))}
+                      </span>
+                    </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <button 
@@ -816,12 +929,30 @@ export default function AeroDriverDashboard() {
                       step={field.step}
                       min={field.min}
                       name={field.name}
-                      required
+                      required={!field.optional}
                       value={form[field.name as keyof typeof form]}
                       onChange={(e) => setForm({ ...form, [field.name]: e.target.value })}
                       placeholder={field.placeholder}
                       className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 outline-none focus:border-amber-400 transition-colors [color-scheme:dark]"
                     />
+                  )}
+                  {field.name === 'meetingPoint' && (
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {MEETING_PRESETS.map((p) => (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => setForm({ ...form, meetingPoint: p })}
+                          className={`text-[10px] font-bold px-2.5 py-1 rounded-full border transition-colors ${
+                            form.meetingPoint === p
+                              ? 'bg-amber-400/15 border-amber-400/50 text-amber-300'
+                              : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-amber-400/50 hover:text-amber-300'
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      ))}
+                    </div>
                   )}
                 </div>
               ))}
