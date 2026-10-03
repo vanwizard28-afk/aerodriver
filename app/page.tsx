@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useSyncExternalStore } from 'react'
 import { Plane, Car, Clock, Navigation, CheckCircle2, ChevronRight, ChevronDown, User, Phone, Radio, Radar, Gauge, PlaneLanding, Luggage, MoveVertical, Plus, X, Presentation, Diamond } from 'lucide-react'
 
 const DRIVER_STAGES = ["En Route to Terminal", "At Pickup Point", "Passenger Onboard", "Completed"]
@@ -65,6 +65,33 @@ type FlightTelemetry = {
   progress: number
 }
 
+type StoredTelemetry = { flight: FlightTelemetry; fetchedAt: number }
+
+type FlightError = {
+  kind: 'not_found' | 'rate_limited' | 'error'
+  error: string
+}
+
+const subscribeOnline = (callback: () => void) => {
+  window.addEventListener('online', callback)
+  window.addEventListener('offline', callback)
+  return () => {
+    window.removeEventListener('online', callback)
+    window.removeEventListener('offline', callback)
+  }
+}
+const getOnlineSnapshot = () => navigator.onLine
+const getOnlineServerSnapshot = () => true
+
+const STALE_MS = 10 * 60 * 1000
+
+const formatAge = (ms: number) => {
+  if (ms < 60_000) return 'Updated just now'
+  const m = Math.floor(ms / 60_000)
+  if (m < 60) return `Updated ${m} min ago`
+  return `Updated ${Math.floor(m / 60)}h ago`
+}
+
 const flightCode = (s: string) => s.toUpperCase().replace(/\s+/g, '')
 
 const liveStatusColor = (status: string) =>
@@ -123,8 +150,10 @@ export default function AeroDriverDashboard() {
   const [storageLoaded, setStorageLoaded] = useState(false)
   const [showAddJob, setShowAddJob] = useState(false)
   const [greetingJob, setGreetingJob] = useState<Job | null>(null)
-  const [telemetry, setTelemetry] = useState<Record<string, FlightTelemetry>>({})
+  const [telemetry, setTelemetry] = useState<Record<string, StoredTelemetry>>({})
+  const [flightErrors, setFlightErrors] = useState<Record<string, FlightError>>({})
   const [nowMs, setNowMs] = useState(0)
+  const online = useSyncExternalStore(subscribeOnline, getOnlineSnapshot, getOnlineServerSnapshot)
   const [form, setForm] = useState({ passenger: '', phone: '', flightNo: '', airport: '', pickupHour: '', pickupMinute: '', fare: '' })
 
   useEffect(() => {
@@ -136,6 +165,15 @@ export default function AeroDriverDashboard() {
         if (storedJobs) {
           setJobs((JSON.parse(storedJobs) as Record<string, unknown>[]).map((j) => normalizeJob(j, legacyStages)))
         }
+        const storedTelemetry = localStorage.getItem('aerodriver-telemetry')
+        if (storedTelemetry) {
+          const parsed = JSON.parse(storedTelemetry) as Record<string, StoredTelemetry>
+          const valid: Record<string, StoredTelemetry> = {}
+          for (const [k, v] of Object.entries(parsed)) {
+            if (v && typeof v.fetchedAt === 'number' && v.flight) valid[k] = v
+          }
+          setTelemetry(valid)
+        }
         localStorage.removeItem('aerodriver-stages')
       } catch {}
       setStorageLoaded(true)
@@ -145,7 +183,8 @@ export default function AeroDriverDashboard() {
   useEffect(() => {
     if (!storageLoaded) return
     localStorage.setItem('aerodriver-jobs', JSON.stringify(jobs))
-  }, [jobs, storageLoaded])
+    localStorage.setItem('aerodriver-telemetry', JSON.stringify(telemetry))
+  }, [jobs, telemetry, storageLoaded])
 
   const flightKey = jobs.map((j) => flightCode(j.flightNo)).filter(Boolean).join(',')
 
@@ -154,15 +193,40 @@ export default function AeroDriverDashboard() {
     if (!flightNos.length) return
     let cancelled = false
     const load = async () => {
-      setNowMs(Date.now())
+      const fetchedAt = Date.now()
+      setNowMs(fetchedAt)
       const results = await Promise.allSettled(
-        flightNos.map((fn) => fetch(`/api/flight/${fn}`).then((r) => r.json()))
+        flightNos.map((fn) =>
+          fetch(`/api/flight/${fn}`).then(async (r) => ({
+            status: r.status,
+            body: (await r.json().catch(() => null)) as { found?: boolean; flight?: FlightTelemetry; error?: string } | null,
+          }))
+        )
       )
       if (cancelled) return
       setTelemetry((prev) => {
         const next = { ...prev }
         results.forEach((r, i) => {
-          if (r.status === 'fulfilled' && r.value?.found) next[flightNos[i]] = r.value.flight
+          const v = r.status === 'fulfilled' ? r.value : null
+          if (v?.status === 200 && v.body?.found && v.body.flight) {
+            next[flightNos[i]] = { flight: v.body.flight, fetchedAt }
+          }
+        })
+        return next
+      })
+      setFlightErrors((prev) => {
+        const next = { ...prev }
+        results.forEach((r, i) => {
+          const fn = flightNos[i]
+          const v = r.status === 'fulfilled' ? r.value : null
+          if (!v) {
+            next[fn] = { kind: 'error', error: 'Network error — retrying' }
+          } else if (v.status === 200 && v.body?.found) {
+            delete next[fn]
+          } else {
+            const kind = v.status === 404 ? 'not_found' : v.status === 429 ? 'rate_limited' : 'error'
+            next[fn] = { kind, error: v.body?.error ?? `Lookup failed (${v.status})` }
+          }
         })
         return next
       })
@@ -170,10 +234,15 @@ export default function AeroDriverDashboard() {
     load()
     const interval = setInterval(load, 5 * 60 * 1000)
     const tick = setInterval(() => setNowMs(Date.now()), 30 * 1000)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') load()
+    }
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
       cancelled = true
       clearInterval(interval)
       clearInterval(tick)
+      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [flightKey])
 
@@ -273,9 +342,9 @@ export default function AeroDriverDashboard() {
         </div>
         
         <div className="flex items-center gap-3">
-          <div className="hidden sm:flex items-center gap-2 bg-slate-900 border border-slate-800 px-3.5 py-1.5 rounded-full text-xs font-semibold text-emerald-400">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            Live Flight Tracking Active
+          <div className={`hidden sm:flex items-center gap-2 bg-slate-900 border px-3.5 py-1.5 rounded-full text-xs font-semibold ${online ? 'border-slate-800 text-emerald-400' : 'border-amber-500/40 text-amber-400'}`}>
+            <span className={`w-2.5 h-2.5 rounded-full ${online ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+            {online ? 'Live Flight Tracking Active' : 'Offline — Last Known Data'}
           </div>
           <button
             onClick={() => setShowAddJob(true)}
@@ -289,7 +358,15 @@ export default function AeroDriverDashboard() {
 
       {/* Main Container */}
       <main className="max-w-4xl mx-auto space-y-6">
-        
+
+        {/* Offline Banner */}
+        {!online && (
+          <div className="bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs font-bold rounded-xl px-4 py-2.5 flex items-center gap-2.5">
+            <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0"></span>
+            Offline — showing last known flight data. Updates resume automatically when signal returns.
+          </div>
+        )}
+
         {/* Quick Stats Banner */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
@@ -342,7 +419,10 @@ export default function AeroDriverDashboard() {
             const isExpanded = expandedFlight === job.id
             const stage = job.stage
             const completed = isCompleted(job)
-            const live = telemetry[flightCode(job.flightNo)]
+            const entry = telemetry[flightCode(job.flightNo)]
+            const live = entry?.flight
+            const flightError = flightErrors[flightCode(job.flightNo)]
+            const stale = !online || (entry != null && nowMs - entry.fetchedAt > STALE_MS)
 
             const originStr = live?.origin ?? job.origin
             const destStr = live?.destination ?? job.airport
@@ -363,7 +443,11 @@ export default function AeroDriverDashboard() {
               : live ? liveStatusColor(live.status) : job.statusColor
             const altitude = live?.altitudeFt != null ? `${Math.round(live.altitudeFt).toLocaleString()} ft` : job.altitude
             const airspeed = live?.groundSpeedKt != null ? `${Math.round(live.groundSpeedKt)} kts` : job.airspeed
-            const estArrival = live?.estimatedArrivalUtc ? formatHHMM(live.estimatedArrivalUtc) : job.estimatedArrival
+            const estArrival = live?.actualArrivalUtc
+              ? formatHHMM(live.actualArrivalUtc)
+              : live?.estimatedArrivalUtc
+                ? formatHHMM(live.estimatedArrivalUtc)
+                : job.estimatedArrival
             const terminal = live && live.terminal !== 'TBC' ? `Terminal ${live.terminal}` : job.terminal
             const belt = live?.baggageBelt ?? job.baggageBelt
             const airlineLine = live ? `${live.airline} — ${live.destination}` : `${job.airline} — ${job.airport}`
@@ -394,6 +478,11 @@ export default function AeroDriverDashboard() {
                         <span className="text-xs text-slate-500 font-mono">• {job.id}</span>
                       </div>
                       <p className="text-xs font-medium text-slate-400">{airlineLine}</p>
+                      {entry && nowMs > 0 && (
+                        <p className={`text-[10px] font-medium ${stale ? 'text-amber-400' : 'text-slate-500'}`}>
+                          {formatAge(nowMs - entry.fetchedAt)}{!online ? ' — offline' : ''}
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -404,6 +493,22 @@ export default function AeroDriverDashboard() {
                     <div className={`px-3 py-1.5 rounded-full text-xs font-bold border ${flightStatusColor}`}>
                       {flightStatusLabel}
                     </div>
+                    {flightError && (
+                      <div
+                        title={flightError.error}
+                        className={`px-3 py-1.5 rounded-full text-xs font-bold border ${
+                          flightError.kind === 'not_found'
+                            ? 'bg-red-500/20 text-red-400 border-red-500/40'
+                            : 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                        }`}
+                      >
+                        {flightError.kind === 'not_found'
+                          ? 'Flight Not Found'
+                          : flightError.kind === 'rate_limited'
+                            ? 'API Rate Limited'
+                            : 'Telemetry Error'}
+                      </div>
+                    )}
                     <button
                       onClick={() => handleDelete(job.id)}
                       aria-label={confirmingDelete === job.id ? `Confirm delete job ${job.id}` : `Delete job ${job.id}`}

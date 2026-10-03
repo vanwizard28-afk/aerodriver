@@ -7,7 +7,7 @@ export default function manifest(): MetadataRoute.Manifest {
     description: "Aero Driver",
     start_url: "/",
     display: "standalone",
-    background_color: "#ffffff",
+    background_color: "#020617",
     theme_color: "#0d1226",
     icons: [
       {
