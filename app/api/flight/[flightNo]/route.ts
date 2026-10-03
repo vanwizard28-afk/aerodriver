@@ -76,7 +76,7 @@ export async function GET(
           "X-RapidAPI-Key": apiKey,
           "X-RapidAPI-Host": API_HOST,
         },
-        next: { revalidate: 120 },
+        next: { revalidate: 15 },
       }
     );
   } catch {

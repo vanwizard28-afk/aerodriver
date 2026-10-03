@@ -124,6 +124,7 @@ export default function AeroDriverDashboard() {
   const [showAddJob, setShowAddJob] = useState(false)
   const [greetingJob, setGreetingJob] = useState<Job | null>(null)
   const [telemetry, setTelemetry] = useState<Record<string, FlightTelemetry>>({})
+  const [nowMs, setNowMs] = useState(0)
   const [form, setForm] = useState({ passenger: '', phone: '', flightNo: '', airport: '', pickupHour: '', pickupMinute: '', fare: '' })
 
   useEffect(() => {
@@ -153,6 +154,7 @@ export default function AeroDriverDashboard() {
     if (!flightNos.length) return
     let cancelled = false
     const load = async () => {
+      setNowMs(Date.now())
       const results = await Promise.allSettled(
         flightNos.map((fn) => fetch(`/api/flight/${fn}`).then((r) => r.json()))
       )
@@ -167,9 +169,11 @@ export default function AeroDriverDashboard() {
     }
     load()
     const interval = setInterval(load, 5 * 60 * 1000)
+    const tick = setInterval(() => setNowMs(Date.now()), 30 * 1000)
     return () => {
       cancelled = true
       clearInterval(interval)
+      clearInterval(tick)
     }
   }, [flightKey])
 
@@ -346,9 +350,17 @@ export default function AeroDriverDashboard() {
             const originCity = originStr.match(/\((.*?)\)/)?.[1] ?? ''
             const destCode = destStr.split(' ')[0]
             const destCity = destStr.match(/\((.*?)\)/)?.[1] ?? ''
-            const progress = live?.progress ?? job.progress
-            const flightStatusLabel = live?.statusLabel ?? job.flightStatus
-            const flightStatusColor = live ? liveStatusColor(live.status) : job.statusColor
+            const touchdownMs = Date.parse(live?.actualArrivalUtc ?? live?.estimatedArrivalUtc ?? '')
+            const landed =
+              live?.status === 'Arrived' ||
+              live?.statusLabel === 'Landed' ||
+              job.flightStatus === 'Landed' ||
+              (Number.isFinite(touchdownMs) && nowMs >= touchdownMs)
+            const progress = landed ? 100 : (live?.progress ?? job.progress)
+            const flightStatusLabel = landed ? 'Landed' : (live?.statusLabel ?? job.flightStatus)
+            const flightStatusColor = landed
+              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+              : live ? liveStatusColor(live.status) : job.statusColor
             const altitude = live?.altitudeFt != null ? `${Math.round(live.altitudeFt).toLocaleString()} ft` : job.altitude
             const airspeed = live?.groundSpeedKt != null ? `${Math.round(live.groundSpeedKt)} kts` : job.airspeed
             const estArrival = live?.estimatedArrivalUtc ? formatHHMM(live.estimatedArrivalUtc) : job.estimatedArrival
