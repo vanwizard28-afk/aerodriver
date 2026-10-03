@@ -867,15 +867,15 @@ export default function AeroDriverDashboard() {
 
       {/* ADD NEW JOB MODAL */}
       {showAddJob && (
-        <div 
-          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex justify-center overflow-y-auto p-4 pb-8 pt-[max(2rem,calc(env(safe-area-inset-top,0px)_+_0.75rem))]"
           onClick={() => setShowAddJob(false)}
         >
-          <div 
-            className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl"
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl my-auto"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-5">
               <div className="flex items-center gap-2.5">
                 <div className="bg-amber-400/10 text-amber-400 p-2 rounded-lg border border-amber-400/20">
                   <Plus className="w-4 h-4" />
