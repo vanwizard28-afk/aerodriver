@@ -1,9 +1,10 @@
 "use client"
 
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Plane, Car, Clock, Navigation, CheckCircle2, ChevronRight, ChevronDown, User, Phone, Radio, Radar, Gauge, PlaneLanding, Luggage, MoveVertical, Plus, X, Presentation, Diamond, MessageSquare, MessageCircle, Copy, Check, LogOut } from 'lucide-react'
+import { Plane, Car, Clock, Navigation, CheckCircle2, ChevronRight, ChevronDown, User, Phone, Radio, Radar, Gauge, PlaneLanding, Luggage, MoveVertical, Plus, X, Presentation, Diamond, MessageSquare, MessageCircle, Copy, Check, LogOut, TimerReset, MapPin, Download, Printer, Info } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { supabase, isSupabaseConfigured } from '@/lib/supabase'
+import { airportGuideFor, type AirportGuide } from '@/lib/airport-guides'
 
 const DRIVER_STAGES = ["En Route to Terminal", "At Pickup Point", "Passenger Onboard", "Completed"]
 const NEXT_STAGE_LABELS = ["Mark as Arrived", "Passenger Onboard", "Complete Trip"]
@@ -86,6 +87,7 @@ type FlightTelemetry = {
   destination: string
   terminal: string
   baggageBelt: string
+  scheduledArrivalUtc?: string | null
   estimatedArrivalUtc: string | null
   actualArrivalUtc: string | null
   altitudeFt: number | null
@@ -112,6 +114,13 @@ const getOnlineSnapshot = () => navigator.onLine
 const getOnlineServerSnapshot = () => true
 
 const STALE_MS = 10 * 60 * 1000
+
+// Kerbside buffer — passport control + baggage reclaim after touchdown.
+const PASSPORT_MIN = 25
+const BAGGAGE_MIN = 20
+const ARRIVAL_BUFFER_MIN = PASSPORT_MIN + BAGGAGE_MIN
+// Delays inside this window are treated as on-time (airport noise).
+const ON_TIME_THRESHOLD_MIN = 5
 
 const copyText = async (text: string) => {
   try {
@@ -244,6 +253,7 @@ export default function AeroDriverDashboard() {
   const [storageLoaded, setStorageLoaded] = useState(false)
   const [showAddJob, setShowAddJob] = useState(false)
   const [greetingJob, setGreetingJob] = useState<Job | null>(null)
+  const [guideJob, setGuideJob] = useState<Job | null>(null)
   const [telemetry, setTelemetry] = useState<Record<string, StoredTelemetry>>({})
   const [flightErrors, setFlightErrors] = useState<Record<string, FlightError>>({})
   const [nowMs, setNowMs] = useState(0)
@@ -540,6 +550,88 @@ export default function AeroDriverDashboard() {
   const expensesLabel = formatFare(totalExpenses)
   const netProfitLabel = formatFare(fareSum(jobs) - totalExpenses)
 
+  const completedJobs = jobs.filter(isCompleted)
+  const invoiceDate = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+
+  const csvEscape = (v: string | number) => {
+    const s = String(v)
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+
+  const downloadCsv = () => {
+    const header = ['Date', 'Passenger', 'Flight', 'Airport', 'Pickup Time', 'Fare (£)', 'Parking (£)', 'Other Expenses (£)', 'Net (£)']
+    const rows = completedJobs.map((j) => [
+      new Date(j.pickupAt).toLocaleDateString('en-GB'),
+      j.passenger,
+      j.flightNo,
+      j.airport,
+      formatHHMM(j.pickupAt),
+      j.fareAmount.toFixed(2),
+      j.parkingFee.toFixed(2),
+      j.otherExpenses.toFixed(2),
+      (j.fareAmount - jobExpenses(j)).toFixed(2),
+    ])
+    rows.push([
+      'TOTAL', `${completedJobs.length} trip${completedJobs.length === 1 ? '' : 's'}`, '', '', '',
+      fareSum(completedJobs).toFixed(2),
+      completedJobs.reduce((s, j) => s + j.parkingFee, 0).toFixed(2),
+      completedJobs.reduce((s, j) => s + j.otherExpenses, 0).toFixed(2),
+      completedJobs.reduce((s, j) => s + j.fareAmount - jobExpenses(j), 0).toFixed(2),
+    ])
+    const csv = [header, ...rows].map((r) => r.map(csvEscape).join(',')).join('\r\n')
+    // ﻿ prefix is a UTF-8 BOM so Excel renders £/names correctly
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `aerodriver-transfers-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const printInvoice = () => {
+    const win = window.open('', '_blank')
+    if (!win) return
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const gross = fareSum(completedJobs)
+    const expenses = completedJobs.reduce((s, j) => s + jobExpenses(j), 0)
+    const rows = completedJobs.map((j, i) => `
+      <tr style="background:${i % 2 ? '#f8fafc' : '#fff'}">
+        <td>${esc(new Date(j.pickupAt).toLocaleDateString('en-GB'))}</td>
+        <td>${esc(j.passenger)}</td>
+        <td>${esc(j.flightNo)}</td>
+        <td>${esc(j.airport)}</td>
+        <td>${esc(j.pickupPoint)}</td>
+        <td style="text-align:right">£${j.fareAmount.toFixed(2)}</td>
+      </tr>`).join('')
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>AeroDriver Invoice — ${esc(invoiceDate)}</title>
+      <style>
+        body { font-family: ui-sans-serif, system-ui, sans-serif; color: #0f172a; max-width: 720px; margin: 40px auto; padding: 0 24px; }
+        h1 { font-size: 22px; margin: 0; } .sub { color: #64748b; font-size: 12px; margin-top: 4px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 13px; }
+        th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #64748b; border-bottom: 2px solid #0f172a; padding: 8px; }
+        td { border-bottom: 1px solid #e2e8f0; padding: 8px; }
+        .totals { margin-top: 16px; margin-left: auto; width: 260px; font-size: 13px; }
+        .totals div { display: flex; justify-content: space-between; padding: 4px 8px; }
+        .grand { font-weight: 800; font-size: 15px; border-top: 2px solid #0f172a; }
+        .foot { margin-top: 48px; font-size: 11px; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 12px; }
+        @media print { body { margin: 0; } }
+      </style></head><body>
+      <h1>AeroDriver — Transfer Invoice</h1>
+      <p class="sub">${esc(userEmail || 'Driver account')} · Issued ${esc(invoiceDate)} · ${completedJobs.length} completed trip${completedJobs.length === 1 ? '' : 's'}</p>
+      <table><thead><tr><th>Date</th><th>Passenger</th><th>Flight</th><th>Airport</th><th>Meeting Point</th><th style="text-align:right">Fare</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      <div class="totals">
+        <div><span>Gross fares</span><span>£${gross.toFixed(2)}</span></div>
+        <div><span>Expenses (driver-borne)</span><span>−£${expenses.toFixed(2)}</span></div>
+        <div class="grand"><span>Net total</span><span>£${(gross - expenses).toFixed(2)}</span></div>
+      </div>
+      <p class="foot">Generated by AeroDriver. Expenses shown for reference where they are not rechargeable to the client. Please retain parking receipts.</p>
+      <script>window.onload = () => setTimeout(() => window.print(), 150)<\/script>
+      </body></html>`)
+    win.document.close()
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-4 md:p-6">
       <style>{`@keyframes radar-sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
@@ -639,6 +731,35 @@ export default function AeroDriverDashboard() {
           </div>
         </div>
 
+        {/* Billing Export */}
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-2.5 text-xs">
+            <Download className="w-4 h-4 text-amber-400" />
+            <span className="font-bold text-slate-200">Billing Export</span>
+            <span className="text-slate-500">
+              {completedCount > 0
+                ? `${completedCount} completed trip${completedCount === 1 ? '' : 's'} ready`
+                : 'Complete a trip to export'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={downloadCsv}
+              disabled={completedCount === 0}
+              className="flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 hover:border-amber-400/50 hover:text-amber-300 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <Download className="w-3.5 h-3.5" /> CSV
+            </button>
+            <button
+              onClick={printInvoice}
+              disabled={completedCount === 0}
+              className="flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 hover:border-amber-400/50 hover:text-amber-300 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <Printer className="w-3.5 h-3.5" /> Invoice / Print
+            </button>
+          </div>
+        </div>
+
         {/* Tab Filters */}
         <div className="flex border-b border-slate-800 gap-6 text-sm font-semibold">
           <button 
@@ -679,6 +800,15 @@ export default function AeroDriverDashboard() {
             const destCode = destStr.split(' ')[0]
             const destCity = destStr.match(/\((.*?)\)/)?.[1] ?? ''
             const touchdownMs = Date.parse(live?.actualArrivalUtc ?? live?.estimatedArrivalUtc ?? '')
+            const scheduledArrMs = Date.parse(live?.scheduledArrivalUtc ?? '')
+            const delayMin =
+              Number.isFinite(scheduledArrMs) && Number.isFinite(touchdownMs)
+                ? Math.round((touchdownMs - scheduledArrMs) / 60_000)
+                : null
+            // Kerbside-ready time: touchdown + passport + baggage buffer.
+            const kerbsideMs = Number.isFinite(touchdownMs)
+              ? touchdownMs + ARRIVAL_BUFFER_MIN * 60_000
+              : NaN
             const landed =
               live?.status === 'Arrived' ||
               live?.statusLabel === 'Landed' ||
@@ -701,7 +831,9 @@ export default function AeroDriverDashboard() {
             const airlineLine = live ? `${live.airline} — ${live.destination}` : `${job.airline} — ${job.airport}`
             const contactMessage = `Hi ${job.passenger.split(' ')[0] || 'there'}, this is your driver. I'm tracking flight ${job.flightNo} (${flightStatusLabel}, est. touchdown ${estArrival}). I will meet you at ${job.pickupPoint}.`
             const waPhone = job.phone.replace(/\D/g, '').replace(/^00/, '').replace(/^0/, '44')
-            const leaveByMs = (Number.isFinite(touchdownMs) ? touchdownMs : Date.parse(job.pickupAt)) - travelMinutes * 60_000
+            // Leave By anchors to kerbside-ready time when live telemetry
+            // exists, else the driver's manually set pickup time.
+            const leaveByMs = (Number.isFinite(kerbsideMs) ? kerbsideMs : Date.parse(job.pickupAt)) - travelMinutes * 60_000
             const departNow = nowMs > 0 && Number.isFinite(leaveByMs) && leaveByMs <= nowMs
 
             const t = progress / 100
@@ -817,6 +949,25 @@ export default function AeroDriverDashboard() {
                       <Clock className="w-4 h-4 text-slate-400" />
                       <span>Pickup Time: <strong className="text-amber-400">{formatHHMM(job.pickupAt)}</strong></span>
                     </div>
+                    {Number.isFinite(kerbsideMs) && !completed && (
+                      <div
+                        title={`Pickup auto-adjusts to touchdown + ${PASSPORT_MIN}m passport + ${BAGGAGE_MIN}m bags`}
+                        className={`flex items-center gap-2 text-[11px] font-bold rounded-lg border px-2.5 py-1.5 w-fit ${
+                          delayMin != null && delayMin > ON_TIME_THRESHOLD_MIN
+                            ? 'bg-amber-500/10 border-amber-500/40 text-amber-300'
+                            : delayMin != null && delayMin < -ON_TIME_THRESHOLD_MIN
+                              ? 'bg-sky-500/10 border-sky-500/40 text-sky-300'
+                              : 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
+                        }`}
+                      >
+                        <TimerReset className="w-3.5 h-3.5 shrink-0" />
+                        {delayMin == null || Math.abs(delayMin) <= ON_TIME_THRESHOLD_MIN
+                          ? `On time — passenger ready ~${formatHHMM(new Date(kerbsideMs))}`
+                          : delayMin > 0
+                            ? `+${delayMin} min delay — Pickup moved to ${formatHHMM(new Date(kerbsideMs))}`
+                            : `${-delayMin} min early — Pickup moved to ${formatHHMM(new Date(kerbsideMs))}`}
+                      </div>
+                    )}
                   </div>
 
                   <div className="space-y-2 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
@@ -1059,6 +1210,13 @@ export default function AeroDriverDashboard() {
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => setGuideJob(job)}
+                      className="bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 font-bold px-5 py-2.5 rounded-xl flex items-center gap-2 transition-all text-sm"
+                    >
+                      Airport Guide
+                      <MapPin className="w-4 h-4" />
+                    </button>
                     <button 
                       onClick={() => setGreetingJob(job)}
                       className="bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 font-bold px-5 py-2.5 rounded-xl flex items-center gap-2 transition-all text-sm"
@@ -1225,6 +1383,99 @@ export default function AeroDriverDashboard() {
           </div>
         </div>
       )}
+
+      {/* AIRPORT TERMINAL GUIDE MODAL */}
+      {guideJob && (() => {
+        const live = telemetry[flightCode(guideJob.flightNo)]?.flight
+        const guide: AirportGuide = airportGuideFor(
+          `${live?.destination ?? ''} ${guideJob.airport} ${guideJob.terminal}`
+        )
+        const wantedTerminal = guideJob.terminal.match(/T(\d)/i)?.[1] ?? live?.terminal ?? ''
+        return (
+          <div
+            className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex justify-center overflow-y-auto p-4 pb-8 pt-[max(2rem,calc(env(safe-area-inset-top,0px)_+_0.75rem))]"
+            onClick={() => setGuideJob(null)}
+          >
+            <div
+              className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl my-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="bg-amber-400/10 text-amber-400 p-2 rounded-lg border border-amber-400/20">
+                    <MapPin className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold text-white">{guide.name}</h2>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">Driver Cheat Sheet — {guideJob.flightNo}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setGuideJob(null)}
+                  aria-label="Close airport guide"
+                  className="text-slate-400 hover:text-white transition-colors p-1"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4 text-sm">
+                <div>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 block mb-2">Terminal Pickup Zones</span>
+                  <div className="space-y-1.5">
+                    {guide.terminals.map((t) => (
+                      <div
+                        key={t.terminal}
+                        className={`rounded-lg border px-3 py-2 text-xs ${
+                          wantedTerminal && (t.terminal.includes(wantedTerminal) || t.terminal.toLowerCase().includes('single'))
+                            ? 'border-amber-400/50 bg-amber-400/10'
+                            : 'border-slate-800 bg-slate-950/60'
+                        }`}
+                      >
+                        <span className="font-bold text-slate-200">{t.terminal}: </span>
+                        <span className="text-slate-300">{t.pickup}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Express Drop-off</span>
+                    <p className="text-xs text-slate-300 leading-relaxed">{guide.dropoff}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Driver Holding Area</span>
+                    <p className="text-xs text-slate-300 leading-relaxed">{guide.holding}</p>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 block mb-1">Short-Stay Parking Tip</span>
+                  <p className="text-xs text-slate-300 leading-relaxed">{guide.parkingTip}</p>
+                </div>
+
+                <div>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 block mb-1.5">Pro Tips</span>
+                  <ul className="space-y-1.5">
+                    {guide.tips.map((tip, i) => (
+                      <li key={i} className="flex items-start gap-2 text-xs text-slate-300 leading-relaxed">
+                        <span className="w-1 h-1 rounded-full bg-amber-400 mt-1.5 shrink-0"></span>
+                        {tip}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <p className="flex items-start gap-1.5 text-[10px] text-slate-500 leading-relaxed border-t border-slate-800 pt-3">
+                  <Info className="w-3 h-3 shrink-0 mt-px" />
+                  Charges and zones change regularly — confirm on the airport&apos;s official site before billing expenses.
+                </p>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* GREETING SIGN MODAL */}
       {greetingJob && (
