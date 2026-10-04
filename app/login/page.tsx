@@ -1,11 +1,25 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Car, Plane, Mail, CheckCircle2 } from "lucide-react";
+import { Car, Plane, Mail, ShieldCheck } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 
+const friendlyError = (message: string) => {
+  const m = message.toLowerCase();
+  if (m.includes("expired"))
+    return "That code has expired — request a fresh one below.";
+  if (m.includes("invalid") || m.includes("token"))
+    return "That code isn't right — check the digits and try again.";
+  if (m.includes("rate") || m.includes("security") || m.includes("too many"))
+    return "Too many attempts — wait a minute, then request a new code.";
+  return message;
+};
+
 export default function LoginPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -17,7 +31,25 @@ export default function LoginPage() {
     if (msg) queueMicrotask(() => setError(decodeURIComponent(msg.replace(/\+/g, " "))));
   }, []);
 
-  const submit = async (e: React.FormEvent) => {
+  const sendCode = async () => {
+    if (!supabase) {
+      setError("Supabase is not configured on this deployment.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    const { error: err } = await supabase.auth.signInWithOtp({ email });
+    setBusy(false);
+    if (err) setError(friendlyError(err.message));
+    else setSent(true);
+  };
+
+  const submitEmail = (e: React.FormEvent) => {
+    e.preventDefault();
+    void sendCode();
+  };
+
+  const submitCode = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!supabase) {
       setError("Supabase is not configured on this deployment.");
@@ -25,15 +57,24 @@ export default function LoginPage() {
     }
     setBusy(true);
     setError("");
-    const { error: err } = await supabase.auth.signInWithOtp({
+    const { error: err } = await supabase.auth.verifyOtp({
       email,
-      options: {
-        emailRedirectTo: `${window.location.origin}/auth/confirm`,
-      },
+      token: code.trim(),
+      type: "email",
     });
     setBusy(false);
-    if (err) setError(err.message);
-    else setSent(true);
+    if (err) {
+      setError(friendlyError(err.message));
+    } else {
+      // Session is now in the shared persistent cookie — dashboard proxy
+      // and getSession() both see it immediately.
+      router.replace("/");
+    }
+  };
+
+  const resend = () => {
+    setCode("");
+    void sendCode();
   };
 
   return (
@@ -53,22 +94,75 @@ export default function LoginPage() {
         </div>
 
         {sent ? (
-          <div className="text-center py-4">
-            <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto mb-3" />
-            <p className="text-sm font-bold text-white">Check your inbox</p>
-            <p className="text-xs text-slate-400 mt-1.5">
-              We sent a sign-in link to <span className="text-amber-400">{email}</span>.
-              Open it on this device to continue.
-            </p>
-            <p className="text-[11px] text-slate-500 mt-4 leading-relaxed">
-              Tip: if the link opens inside your mail app&apos;s mini-browser,
-              copy the full link and open it in your main browser instead —
-              sign-in only completes in a browser that can share cookies
-              with the AeroDriver app.
-            </p>
-          </div>
+          <form onSubmit={submitCode} className="space-y-4">
+            <div className="text-center">
+              <ShieldCheck className="w-10 h-10 text-emerald-400 mx-auto mb-3" />
+              <p className="text-sm font-bold text-white">Enter your code</p>
+              <p className="text-xs text-slate-400 mt-1.5">
+                We sent a 6-digit code to{" "}
+                <span className="text-amber-400">{email}</span>. Enter it
+                below — no links to open.
+              </p>
+            </div>
+            <div>
+              <label
+                htmlFor="otp-code"
+                className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1.5 text-center"
+              >
+                6-Digit Code
+              </label>
+              <input
+                id="otp-code"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="[0-9]*"
+                maxLength={6}
+                required
+                autoFocus
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                placeholder="••••••"
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-3 text-center text-2xl font-mono font-bold tracking-[0.5em] text-amber-300 placeholder:text-slate-700 placeholder:tracking-[0.5em] outline-none focus:border-amber-400 transition-colors"
+              />
+            </div>
+            {error && (
+              <p className="text-xs font-semibold text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+                {error}
+              </p>
+            )}
+            <button
+              type="submit"
+              disabled={busy || code.length !== 6 || !isSupabaseConfigured}
+              className="w-full bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-bold px-4 py-2.5 rounded-xl flex items-center justify-center gap-2 text-sm transition-all shadow-md shadow-amber-400/10"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              {busy ? "Verifying…" : "Verify Code"}
+            </button>
+            <div className="flex items-center justify-between text-[11px] font-semibold">
+              <button
+                type="button"
+                onClick={() => {
+                  setSent(false);
+                  setCode("");
+                  setError("");
+                }}
+                className="text-slate-400 hover:text-slate-200 transition-colors"
+              >
+                ← Use a different email
+              </button>
+              <button
+                type="button"
+                onClick={resend}
+                disabled={busy}
+                className="text-amber-400 hover:text-amber-300 disabled:opacity-50 transition-colors"
+              >
+                Resend code
+              </button>
+            </div>
+          </form>
         ) : (
-          <form onSubmit={submit} className="space-y-4">
+          <form onSubmit={submitEmail} className="space-y-4">
             <div>
               <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">
                 Driver Email
@@ -93,7 +187,7 @@ export default function LoginPage() {
               className="w-full bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-bold px-4 py-2.5 rounded-xl flex items-center justify-center gap-2 text-sm transition-all shadow-md shadow-amber-400/10"
             >
               <Mail className="w-4 h-4" />
-              {busy ? "Sending link…" : "Email me a sign-in link"}
+              {busy ? "Sending code…" : "Email me a sign-in code"}
             </button>
             {!isSupabaseConfigured && (
               <p className="text-[11px] text-slate-500 text-center">
