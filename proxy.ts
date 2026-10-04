@@ -41,6 +41,17 @@ export async function proxy(request: NextRequest) {
     }
     if (!PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
       const redirect = request.nextUrl.clone();
+      if (
+        request.nextUrl.searchParams.has("code") ||
+        request.nextUrl.searchParams.has("token_hash")
+      ) {
+        // A magic link landed on a protected path (e.g. Supabase Site URL
+        // pointing at the app root). Forward the auth material to the
+        // exchange endpoint — redirecting to /login would silently drop
+        // the query params and strand the user on the email form.
+        redirect.pathname = "/auth/confirm";
+        return NextResponse.redirect(redirect);
+      }
       redirect.pathname = "/login";
       redirect.search = "";
       return NextResponse.redirect(redirect);

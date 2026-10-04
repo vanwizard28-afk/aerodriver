@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Car, Plane, Mail, ShieldCheck } from "lucide-react";
+import { Car, Plane, Mail, ShieldCheck, LoaderCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
+import type { EmailOtpType } from "@supabase/supabase-js";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 
 const friendlyError = (message: string) => {
@@ -23,13 +24,71 @@ export default function LoginPage() {
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [completing, setCompleting] = useState(false);
 
-  // Surface errors bounced back from Supabase / the callback route.
+  // Auto-complete any auth material already in the URL — a magic link
+  // opened in an unexpected context lands here (or on / via the proxy,
+  // which forwards to /auth/confirm). Handles, in order:
+  //   ?code=          PKCE exchange (same-browser links)
+  //   ?token_hash=    server-style OTP links (works from any context)
+  //   #access_token=  implicit fragments (browsers inherit them across
+  //                   the proxy's redirect to /login)
+  //   existing session or ?error — just act accordingly.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const msg = params.get("error_description") ?? params.get("error");
-    if (msg) queueMicrotask(() => setError(decodeURIComponent(msg.replace(/\+/g, " "))));
-  }, []);
+    if (!supabase) return;
+    const client = supabase;
+    queueMicrotask(() => {
+      const params = new URLSearchParams(window.location.search);
+      const hash = new URLSearchParams(window.location.hash.slice(1));
+      const codeParam = params.get("code");
+      const tokenHash = params.get("token_hash");
+      const type = params.get("type");
+      const hasImplicitHash = Boolean(
+        hash.get("access_token") || hash.get("refresh_token")
+      );
+      const msg = params.get("error_description") ?? params.get("error");
+
+      const run = async () => {
+        if (codeParam) {
+          setCompleting(true);
+          const { error: err } = await client.auth.exchangeCodeForSession(codeParam);
+          if (!err) return router.replace("/");
+          setError(friendlyError(err.message));
+          setCompleting(false);
+          return;
+        }
+        if (tokenHash && type) {
+          setCompleting(true);
+          const { error: err } = await client.auth.verifyOtp({
+            token_hash: tokenHash,
+            type: type as EmailOtpType,
+          });
+          if (!err) return router.replace("/");
+          setError(friendlyError(err.message));
+          setCompleting(false);
+          return;
+        }
+        if (hasImplicitHash) {
+          setCompleting(true);
+          // detectSessionInUrl parses the fragment during client init —
+          // poll briefly for the session to materialise.
+          for (let i = 0; i < 5; i++) {
+            const { data: { session } } = await client.auth.getSession();
+            if (session) return router.replace("/");
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          setError("Couldn't complete that sign-in link — request a new code below.");
+          setCompleting(false);
+          return;
+        }
+        const { data: { session } } = await client.auth.getSession();
+        if (session) return router.replace("/");
+        if (msg) setError(decodeURIComponent(msg.replace(/\+/g, " ")));
+      };
+
+      void run();
+    });
+  }, [router]);
 
   const sendCode = async () => {
     if (!supabase) {
@@ -38,7 +97,15 @@ export default function LoginPage() {
     }
     setBusy(true);
     setError("");
-    const { error: err } = await supabase.auth.signInWithOtp({ email });
+    const { error: err } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        // Magic-link taps get routed to the server exchange endpoint;
+        // if the template also renders {{ .Token }} the code path works
+        // from the same single email.
+        emailRedirectTo: `${window.location.origin}/auth/confirm`,
+      },
+    });
     setBusy(false);
     if (err) setError(friendlyError(err.message));
     else setSent(true);
@@ -93,7 +160,20 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {sent ? (
+        {completing ? (
+          <div className="text-center py-6">
+            <LoaderCircle className="w-10 h-10 text-amber-400 mx-auto mb-3 animate-spin" />
+            <p className="text-sm font-bold text-white">Completing sign-in…</p>
+            <p className="text-xs text-slate-400 mt-1.5">
+              Verifying your sign-in link with Supabase.
+            </p>
+            {error && (
+              <p className="text-xs font-semibold text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mt-4">
+                {error}
+              </p>
+            )}
+          </div>
+        ) : sent ? (
           <form onSubmit={submitCode} className="space-y-4">
             <div className="text-center">
               <ShieldCheck className="w-10 h-10 text-emerald-400 mx-auto mb-3" />
