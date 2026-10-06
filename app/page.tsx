@@ -185,6 +185,12 @@ type OutboxOp = {
 const OUTBOX_KEY = 'aerodriver-outbox'
 const OUTBOX_MAX_TRIES = 10
 
+const ADMIN_COOKIE = 'aerodriver_admin'
+
+const hasAdminBypassCookie = () =>
+  typeof document !== 'undefined' &&
+  document.cookie.split(';').some((c) => c.trim().startsWith(`${ADMIN_COOKIE}=`))
+
 const readOutbox = (): OutboxOp[] => {
   try {
     return JSON.parse(localStorage.getItem(OUTBOX_KEY) ?? '[]') as OutboxOp[]
@@ -314,6 +320,7 @@ export default function AeroDriverDashboard() {
   const [filterDate, setFilterDate] = useState('')
   const [todayStr, setTodayStr] = useState('')
   const [outboxCount, setOutboxCount] = useState(0)
+  const [bypassMode, setBypassMode] = useState(false)
   const [telemetry, setTelemetry] = useState<Record<string, StoredTelemetry>>({})
   const [flightErrors, setFlightErrors] = useState<Record<string, FlightError>>({})
   const [nowMs, setNowMs] = useState(0)
@@ -355,7 +362,13 @@ export default function AeroDriverDashboard() {
       } catch {}
       setTodayStr(localDateStr(new Date()))
 
-      if (supabase) {
+      // Admin bypass cookie = local-only demo mode: skip the session
+      // gate, the transfers fetch, and all sync — localStorage is the
+      // source of truth.
+      const bypass = hasAdminBypassCookie()
+      setBypassMode(bypass)
+
+      if (supabase && !bypass) {
         try {
           // getSession reads the local cookie — no network, so the PWA
           // still boots offline with a valid cached session.
@@ -499,7 +512,7 @@ export default function AeroDriverDashboard() {
   // Offline outbox flush — replays queued ops in order, stops on first
   // failure, drops an op only after OUTBOX_MAX_TRIES attempts.
   useEffect(() => {
-    if (!supabase || !storageLoaded) return
+    if (!supabase || !storageLoaded || bypassMode) return
     let inFlight = false
     const flush = async () => {
       if (inFlight || !navigator.onLine) return
@@ -530,7 +543,7 @@ export default function AeroDriverDashboard() {
       window.removeEventListener('online', flush)
       clearInterval(interval)
     }
-  }, [online, storageLoaded])
+  }, [online, storageLoaded, bypassMode])
 
   const enqueueOutbox = (op: OutboxOp) => {
     const tries = (op.tries ?? 0) + 1
@@ -544,7 +557,7 @@ export default function AeroDriverDashboard() {
   }
 
   const syncOp = (op: OutboxOp) => {
-    if (!supabase) return
+    if (!supabase || bypassMode) return
     if (!navigator.onLine) {
       enqueueOutbox(op)
       return
@@ -555,7 +568,7 @@ export default function AeroDriverDashboard() {
   }
 
   const syncUpdate = (id: string, patch: Record<string, unknown>) => {
-    if (!supabase) return
+    if (!supabase || bypassMode) return
     syncOp({ id, op: 'update', patch, at: Date.now() })
   }
 
@@ -572,9 +585,7 @@ export default function AeroDriverDashboard() {
       setJobs(prev => prev.filter(j => j.id !== id))
       if (expandedFlight === id) setExpandedFlight(null)
       setConfirmingDelete(null)
-      if (supabase) {
-        syncOp({ id, op: 'delete', at: Date.now() })
-      }
+      syncOp({ id, op: 'delete', at: Date.now() })
     } else {
       setConfirmingDelete(id)
       setTimeout(() => setConfirmingDelete(prev => (prev === id ? null : prev)), 3000)
@@ -605,6 +616,11 @@ export default function AeroDriverDashboard() {
   }
 
   const handleSignOut = async () => {
+    if (bypassMode) {
+      document.cookie = `${ADMIN_COOKIE}=; Path=/; Max-Age=0`
+      router.replace('/login')
+      return
+    }
     await supabase?.auth.signOut()
     router.replace('/login')
   }

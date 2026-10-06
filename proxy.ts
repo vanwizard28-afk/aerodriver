@@ -35,7 +35,15 @@ export async function proxy(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
-  if (!user) {
+  // Admin bypass: cookie value must match the server-side key — the
+  // cookie alone proves nothing without the env var being set.
+  const bypassKey = process.env.ADMIN_BYPASS_KEY;
+  const bypassOk =
+    Boolean(bypassKey) &&
+    request.cookies.get("aerodriver_admin")?.value === bypassKey;
+
+  if (!user && !bypassOk) {
+    if (pathname.startsWith("/api/auth/admin-bypass")) return response;
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -58,7 +66,7 @@ export async function proxy(request: NextRequest) {
     }
   }
 
-  if (user && pathname === "/login") {
+  if ((user || bypassOk) && pathname === "/login") {
     const redirect = request.nextUrl.clone();
     redirect.pathname = "/";
     redirect.search = "";

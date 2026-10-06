@@ -34,6 +34,8 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [completing, setCompleting] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
+  const [adminKey, setAdminKey] = useState("");
 
   // Auto-complete any auth material already in the URL — covers legacy
   // magic links still sitting in inboxes and the recovery link landing.
@@ -52,6 +54,19 @@ export default function LoginPage() {
       const tokenHash = params.get("token_hash");
       const type = params.get("type");
       const recovery = params.get("recovery");
+      const bypassParam = params.get("bypass");
+      // /login?bypass=<key> → straight to the bypass endpoint; the route
+      // validates the key and sets the 1-year admin cookie itself.
+      // /login?bypass=true just reveals the key field.
+      if (bypassParam && bypassParam !== "true" && bypassParam !== "1") {
+        window.location.assign(
+          `${window.location.origin}/api/auth/admin-bypass?key=${encodeURIComponent(bypassParam)}`
+        );
+        return;
+      }
+      if (bypassParam === "true" || bypassParam === "1") {
+        setShowAdmin(true);
+      }
       const hasImplicitHash = Boolean(
         hash.get("access_token") || hash.get("refresh_token")
       );
@@ -194,6 +209,14 @@ export default function LoginPage() {
       setNotice(
         "Check your email — the recovery link brings you back here to set a new password."
       );
+  };
+
+  const goAdminBypass = () => {
+    if (!adminKey) return;
+    // Full navigation — the endpoint sets the cookie and redirects to /.
+    window.location.assign(
+      `${window.location.origin}/api/auth/admin-bypass?key=${encodeURIComponent(adminKey)}`
+    );
   };
 
   const switchMode = (m: Mode) => {
@@ -379,6 +402,43 @@ export default function LoginPage() {
               )}
             </form>
           </>
+        )}
+
+        {/* Admin quick access — key is validated server-side against
+            ADMIN_BYPASS_KEY; a wrong key just bounces back here. */}
+        {!completing && isSupabaseConfigured && (
+          <div className="mt-6 pt-4 border-t border-slate-800/60">
+            {!showAdmin ? (
+              <button
+                type="button"
+                onClick={() => setShowAdmin(true)}
+                className="w-full text-[10px] font-semibold text-slate-600 hover:text-slate-400 transition-colors text-center tracking-wider uppercase"
+              >
+                Admin Quick Access
+              </button>
+            ) : (
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={adminKey}
+                  onChange={(e) => setAdminKey(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && goAdminBypass()}
+                  placeholder="Admin key"
+                  aria-label="Admin key"
+                  autoComplete="off"
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600 outline-none focus:border-amber-400 transition-colors"
+                />
+                <button
+                  type="button"
+                  onClick={goAdminBypass}
+                  disabled={!adminKey}
+                  className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 font-bold px-4 py-2 rounded-lg text-xs transition-colors border border-slate-700"
+                >
+                  Enter
+                </button>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
