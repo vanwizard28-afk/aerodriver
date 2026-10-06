@@ -14,6 +14,13 @@ export async function GET(request: Request) {
   const code = searchParams.get("code");
   const tokenHash = searchParams.get("token_hash");
   const type = searchParams.get("type") as EmailOtpType | null;
+  // Optional post-exchange destination — used by the password-recovery
+  // flow to land the (now authenticated) user on the set-password screen.
+  const nextParam = searchParams.get("next");
+  const next =
+    nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//")
+      ? nextParam
+      : "/";
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -48,5 +55,5 @@ export async function GET(request: Request) {
       `${origin}/login?error=${encodeURIComponent(error.message)}`
     );
   }
-  return NextResponse.redirect(`${origin}/`);
+  return NextResponse.redirect(`${origin}${next}`);
 }
