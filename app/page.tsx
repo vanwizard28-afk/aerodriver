@@ -373,29 +373,29 @@ export default function AeroDriverDashboard() {
           // getSession reads the local cookie — no network, so the PWA
           // still boots offline with a valid cached session.
           const { data: { session } } = await supabase.auth.getSession()
-          if (!session?.user) {
-            router.replace('/login')
-            return
-          }
-          setUserId(session.user.id)
-          setUserEmail(session.user.email ?? '')
-          const { data } = await supabase
-            .from('transfers')
-            .select('*')
-            .order('pickup_at')
-          if (data) {
-            if (data.length === 0 && localJobs.length > 0) {
-              // One-time migration: push localStorage jobs up as transfers.
-              const rows = localJobs.map((j) =>
-                jobToRow({ ...j, id: crypto.randomUUID() })
-              )
-              const { data: inserted } = await supabase
-                .from('transfers')
-                .insert(rows)
-                .select()
-              if (inserted) setJobs(inserted.map((r) => rowToJob(r as TransferRow)))
-            } else {
-              setJobs(data.map((r) => rowToJob(r as TransferRow)))
+          // No session → local-only mode (auth currently disabled
+          // app-wide). A live session still enables cloud sync.
+          if (session?.user) {
+            setUserId(session.user.id)
+            setUserEmail(session.user.email ?? '')
+            const { data } = await supabase
+              .from('transfers')
+              .select('*')
+              .order('pickup_at')
+            if (data) {
+              if (data.length === 0 && localJobs.length > 0) {
+                // One-time migration: push localStorage jobs up as transfers.
+                const rows = localJobs.map((j) =>
+                  jobToRow({ ...j, id: crypto.randomUUID() })
+                )
+                const { data: inserted } = await supabase
+                  .from('transfers')
+                  .insert(rows)
+                  .select()
+                if (inserted) setJobs(inserted.map((r) => rowToJob(r as TransferRow)))
+              } else {
+                setJobs(data.map((r) => rowToJob(r as TransferRow)))
+              }
             }
           }
         } catch {}
@@ -863,7 +863,7 @@ export default function AeroDriverDashboard() {
             <Plus className="w-4 h-4" />
             Add New Job
           </button>
-          {isSupabaseConfigured && (
+          {isSupabaseConfigured && (userId || bypassMode) && (
             <button
               onClick={handleSignOut}
               title={userEmail ? `Sign out (${userEmail})` : 'Sign out'}

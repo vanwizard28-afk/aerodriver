@@ -59,6 +59,7 @@ export default function LoginPage() {
       // validates the key and sets the 1-year admin cookie itself.
       // /login?bypass=true just reveals the key field.
       if (bypassParam && bypassParam !== "true" && bypassParam !== "1") {
+        // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- full nav required: the route sets a cookie
         window.location.assign(
           `${window.location.origin}/api/auth/admin-bypass?key=${encodeURIComponent(bypassParam)}`
         );
@@ -214,6 +215,7 @@ export default function LoginPage() {
   const goAdminBypass = () => {
     if (!adminKey) return;
     // Full navigation — the endpoint sets the cookie and redirects to /.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- full nav required: the route sets a cookie
     window.location.assign(
       `${window.location.origin}/api/auth/admin-bypass?key=${encodeURIComponent(adminKey)}`
     );
