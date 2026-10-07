@@ -373,8 +373,11 @@ export default function AeroDriverDashboard() {
           // getSession reads the local cookie — no network, so the PWA
           // still boots offline with a valid cached session.
           const { data: { session } } = await supabase.auth.getSession()
-          // No session → local-only mode (auth currently disabled
-          // app-wide). A live session still enables cloud sync.
+          // Auth disabled app-wide: a live session enables cloud sync;
+          // no session → local-only mode with a stub driver identity.
+          // userId is intentionally left null — a fake ID would trigger
+          // realtime + write ops that RLS would reject.
+          if (!session?.user) setUserEmail('demo@aerodriver.local')
           if (session?.user) {
             setUserId(session.user.id)
             setUserEmail(session.user.email ?? '')

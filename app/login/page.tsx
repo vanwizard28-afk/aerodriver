@@ -114,13 +114,10 @@ export default function LoginPage() {
           return;
         }
         const { data: { session } } = await client.auth.getSession();
-        if (session) {
-          if (recovery) {
-            setMode("setpw");
-            return;
-          }
-          return router.replace("/");
-        }
+        // Auth is currently ungated — /login stays a standalone page even
+        // with a live session. Only a recovery link hijacks it into the
+        // set-password mode.
+        if (session && recovery) setMode("setpw");
         if (msg) setError(decodeURIComponent(msg.replace(/\+/g, " ")));
       };
 
